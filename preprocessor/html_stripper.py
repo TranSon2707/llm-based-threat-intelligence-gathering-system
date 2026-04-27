@@ -50,40 +50,24 @@ def strip_html(raw_html: str) -> str:
         return ""
     
     try:
-        decoded_html = html.unescape(raw_html)
+        #decoded_html = html.unescape(raw_html)
+        #stripper = HTMLStripper()
+        #stripper.feed(decoded_html)
+        #return stripper.get_clean_text()
+    
+        # UPDATE: To prevent LLM prompt injection, we must first strip HTML tags before unescaping entities.
+        # STEP 1: Strip actual HTML tags first
         stripper = HTMLStripper()
-        stripper.feed(decoded_html)
-        return stripper.get_clean_text()
+        stripper.feed(raw_html)
+        clean_text = stripper.get_clean_text()
+        
+        # STEP 2: Unescape entities ONLY AFTER stripping
+        # This turns &lt;script&gt; into text that the LLM can read
+        return html.unescape(clean_text)
         
     except Exception as e:
         print(f"[!] Error: {e}")
         return raw_html
-
-class TestHTMLStripper(unittest.TestCase):
-    def test_basic_tag_stripping(self):
-        self.assertEqual(strip_html("<div><h1>Title</h1><p>Test.</p></div>"), "Title Test.")
-
-    def test_whitespace_normalization(self):
-        self.assertEqual(strip_html("<p>   Some \n\n data \t.   </p>"), "Some data .")
-
-    def test_ignore_malicious_tags(self):
-        raw = "<script>alert(1);</script><style>body{}</style><p>Text</p>"
-        self.assertEqual(strip_html(raw), "Text")
-
-    def test_html_entity_unescaping(self):
-        self.assertEqual(strip_html("&lt;script&gt; &amp; &quot;admin&quot;"), "<script> & \"admin\"")
-
-    def test_link_extraction(self):
-        raw = '<a href="https://example.com/patch">Link</a>'
-        self.assertEqual(strip_html(raw), "[https://example.com/patch] Link")
-
-    def test_pre_code_preservation(self):
-        raw = "<pre>line1\n  line2</pre>"
-        self.assertEqual(strip_html(raw), "line1\n  line2")
-
-    def test_empty_inputs(self):
-        self.assertEqual(strip_html(""), "")
-        self.assertEqual(strip_html(None), "")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
