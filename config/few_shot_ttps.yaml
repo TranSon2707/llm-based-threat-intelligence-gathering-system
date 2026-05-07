@@ -1,0 +1,173 @@
+# config/few_shot_ttps.yaml
+# =============================================================================
+# Curated few-shot examples for MITRE ATT&CK TTP mapping.
+# Consumed by enrichment/few_shot_examples.py and attack_mapper.py.
+#
+# Coverage:
+#   Example 1 – Initial Access      (T1190)
+#   Example 2 – Execution + Lateral Movement  (T1059.001, T1003.001, T1550.002, T1021.002)
+#   Example 3 – Exfiltration        (T1560.001, T1041, T1048.002)
+#   Example 4 – Persistence + Defense Evasion + Impact (T1053.005, T1547.001, T1562.001, T1490)
+#   Example 5 – Command and Control (T1071.001, T1573.002, T1090.004, T1008)
+# =============================================================================
+
+examples:
+
+  # ---------------------------------------------------------------------------
+  - id: ex_01_initial_access_log4shell
+    description: "Initial Access via unpatched public-facing application (Log4Shell)"
+    text: >
+      Threat actors exploited CVE-2021-44228 (Log4Shell) in internet-facing
+      Apache servers to achieve remote code execution. The attackers sent
+      crafted JNDI lookup strings inside HTTP User-Agent headers, triggering
+      the vulnerable Log4j library to reach out to an attacker-controlled LDAP
+      server and download a malicious Java class.
+    ttps:
+      - id: T1190
+        name: "Exploit Public-Facing Application"
+        tactic: "Initial Access"
+        justification: >
+          Attackers exploited CVE-2021-44228 in an internet-facing Apache server
+          to gain initial access.
+      - id: T1059.007
+        name: "Command and Scripting Interpreter: JavaScript"
+        tactic: "Execution"
+        justification: >
+          A malicious Java class was downloaded and executed on the victim host
+          after the JNDI callback.
+
+  # ---------------------------------------------------------------------------
+  - id: ex_02_lateral_movement_pass_the_hash
+    description: "Execution + Credential Access + Lateral Movement via PowerShell and Pass-the-Hash"
+    text: >
+      After establishing a foothold, the Lazarus Group operators dropped a
+      PowerShell script that enumerated local credentials from LSASS memory.
+      Using the harvested NTLM hashes they performed pass-the-hash attacks
+      to move laterally across the network via SMB, reaching the domain
+      controller within 90 minutes of initial compromise.
+    ttps:
+      - id: T1059.001
+        name: "Command and Scripting Interpreter: PowerShell"
+        tactic: "Execution"
+        justification: >
+          Operators dropped and ran a PowerShell script to enumerate LSASS
+          credentials.
+      - id: T1003.001
+        name: "OS Credential Dumping: LSASS Memory"
+        tactic: "Credential Access"
+        justification: >
+          The PowerShell script harvested NTLM hashes directly from LSASS memory.
+      - id: T1550.002
+        name: "Use Alternate Authentication Material: Pass the Hash"
+        tactic: "Lateral Movement"
+        justification: >
+          Harvested NTLM hashes were reused via pass-the-hash over SMB to
+          reach the domain controller.
+      - id: T1021.002
+        name: "Remote Services: SMB/Windows Admin Shares"
+        tactic: "Lateral Movement"
+        justification: >
+          Lateral movement was performed over SMB using administrative shares.
+
+  # ---------------------------------------------------------------------------
+  - id: ex_03_exfiltration_dual_channel
+    description: "Collection + Exfiltration over C2 channel and cloud storage (Dropbox)"
+    text: >
+      The APT28 operators used their Cobalt Strike beacon to compress and stage
+      roughly 40 GB of intellectual property in a hidden folder. Data was
+      exfiltrated in two phases: first via encrypted HTTPS to the C2 server,
+      then via a second channel using the Dropbox API to upload
+      password-protected ZIP archives, bypassing DLP controls that only
+      monitored standard email and FTP.
+    ttps:
+      - id: T1560.001
+        name: "Archive Collected Data: Archive via Utility"
+        tactic: "Collection"
+        justification: >
+          Intellectual property was compressed into password-protected ZIP
+          archives before exfiltration.
+      - id: T1041
+        name: "Exfiltration Over C2 Channel"
+        tactic: "Exfiltration"
+        justification: >
+          Data was exfiltrated over the encrypted HTTPS channel used by the
+          Cobalt Strike beacon for C2 communication.
+      - id: T1048.002
+        name: "Exfiltration Over Alternative Protocol: Exfiltration Over Asymmetric Encrypted Non-C2 Protocol"
+        tactic: "Exfiltration"
+        justification: >
+          A secondary Dropbox API channel was used to upload archives,
+          bypassing DLP controls on standard protocols.
+
+  # ---------------------------------------------------------------------------
+  - id: ex_04_persistence_scheduled_task_registry
+    description: "Persistence + Defense Evasion + Impact (WannaCry-style)"
+    text: >
+      WannaCry established persistence on infected hosts by creating a Windows
+      scheduled task named 'MsWindowsUpdate' that re-executed the dropper every
+      30 minutes. Additionally, it modified the registry key
+      HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run to ensure the payload
+      survived reboots. The malware also disabled Windows Defender and removed
+      volume shadow copies to hinder recovery.
+    ttps:
+      - id: T1053.005
+        name: "Scheduled Task/Job: Scheduled Task"
+        tactic: "Persistence"
+        justification: >
+          A scheduled task named 'MsWindowsUpdate' re-executed the dropper
+          every 30 minutes to maintain persistence.
+      - id: T1547.001
+        name: "Boot or Logon Autostart Execution: Registry Run Keys"
+        tactic: "Persistence"
+        justification: >
+          The CurrentVersion\Run registry key was modified to launch the payload
+          on every reboot.
+      - id: T1562.001
+        name: "Impair Defenses: Disable or Modify Tools"
+        tactic: "Defense Evasion"
+        justification: >
+          Windows Defender was disabled to prevent detection of the ransomware
+          payload.
+      - id: T1490
+        name: "Inhibit System Recovery"
+        tactic: "Impact"
+        justification: >
+          Volume shadow copies were deleted to prevent victims from recovering
+          encrypted files.
+
+  # ---------------------------------------------------------------------------
+  - id: ex_05_c2_https_domain_fronting
+    description: "Command and Control via HTTPS, domain fronting, and randomised beaconing"
+    text: >
+      The implant communicated with its command-and-control infrastructure
+      exclusively over TLS 1.3-encrypted HTTPS (port 443) to blend with
+      legitimate web traffic. The malware employed domain fronting through
+      a major CDN provider, routing C2 traffic via a trusted hostname in
+      the CDN's shared certificate while the actual Host header pointed to
+      the attacker's origin server. Beacon intervals were randomised between
+      30 and 120 seconds with 15 % jitter to evade anomaly-based detection.
+    ttps:
+      - id: T1071.001
+        name: "Application Layer Protocol: Web Protocols"
+        tactic: "Command and Control"
+        justification: >
+          C2 traffic was carried over HTTPS (port 443) to mimic legitimate
+          web browsing.
+      - id: T1573.002
+        name: "Encrypted Channel: Asymmetric Cryptography"
+        tactic: "Command and Control"
+        justification: >
+          TLS 1.3 asymmetric encryption was used to protect the C2 channel
+          from inspection.
+      - id: T1090.004
+        name: "Proxy: Domain Fronting"
+        tactic: "Command and Control"
+        justification: >
+          The CDN shared certificate was used for domain fronting to disguise
+          the true C2 origin server.
+      - id: T1008
+        name: "Fallback Channels"
+        tactic: "Command and Control"
+        justification: >
+          Randomised beacon intervals with jitter were used to evade
+          anomaly-based network detection.
