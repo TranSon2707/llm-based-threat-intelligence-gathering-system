@@ -13,12 +13,12 @@ env/
 # Database & Data
 # =========================
 # Ignore the active SQLite database and Write-Ahead Logging (WAL) files
-threat_intel.db
-*.sqlite3
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
+db/threat_intel.db
+db/*.sqlite3
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
 
 # =========================
 # Secrets & API Keys
