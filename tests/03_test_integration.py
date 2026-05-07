@@ -22,7 +22,6 @@ class TestPipelineIntegration(unittest.TestCase):
         # We use RSS because it is fast and doesn't require an API key
         collector = RSSCollector()
         
-        # This single line replaces Linh's entire 'for' loop and try/except block
         inserted, skipped = collector.collect_and_store(
             db_path=Path(DB_PATH), 
             mode="time", 

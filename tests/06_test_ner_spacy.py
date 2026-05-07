@@ -1,7 +1,7 @@
 from enrichment.ner_spacy import extract_ner_entities
 
 # This test covers the spaCy-based NER extraction logic.
-# run by executing: python -m tests.test_ner_spacy
+# run by executing: python -m tests.06_test_ner_spacy
 # enrichment test
 
 sample = """
@@ -12,4 +12,4 @@ Researcher John Smith attributed the attack to a North Korean threat actor.
 
 results = extract_ner_entities(sample)
 for e in results:
-    print(e.entity_type, "→", e.entity_value)
+    print(e.entity_type, "->", e.entity_value)

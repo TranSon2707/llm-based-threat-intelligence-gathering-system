@@ -2,7 +2,7 @@ from enrichment.few_shot_examples import FEW_SHOT_EXAMPLES, EXAMPLE_PROMPT
 import yaml
 
 # This test covers the few-shot example formatting and YAML loading.
-# run by executing: python -m tests.test_few_shot
+# run by executing: python -m tests.08_test_few_shot
 # enrichment test
 
 
@@ -15,7 +15,7 @@ for ex in FEW_SHOT_EXAMPLES:
     msg = EXAMPLE_PROMPT.format(**ex)
     assert "Threat text:" in msg
     assert "Mapped TTPs" in msg
-    print("✓", ex["text"][:60].strip(), "...")
+    print("[v]", ex["text"][:60].strip(), "...")
 
 # Check the YAML loads cleanly
 with open("config/few_shot_ttps.yaml") as f:
@@ -30,4 +30,4 @@ for ex in examples:
     assert "ttps" in ex
     for ttp in ex["ttps"]:
         assert ttp["id"].startswith("T"), f"Bad TTP ID: {ttp['id']}"
-    print("✓", ex["id"])
+    print("[v]", ex["id"])

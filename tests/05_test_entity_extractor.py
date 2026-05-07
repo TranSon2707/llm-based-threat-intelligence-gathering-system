@@ -1,7 +1,7 @@
 from enrichment.entity_extractor import extract_entities
 
 # This test covers the regex-based entity extraction logic.
-# run by executing: python -m tests.test_entity_extractor
+# run by executing: python -m tests.05_test_entity_extractor
 # enrichment test
 
 sample = """
@@ -14,4 +14,4 @@ SHA256:        e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 results = extract_entities(sample)
 for e in results:
-    print(e.entity_type, "→", e.entity_value)
+    print(e.entity_type, "->", e.entity_value)

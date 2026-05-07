@@ -3,7 +3,7 @@ from enrichment.entity_extractor import extract_and_store
 from enrichment.ner_spacy import extract_and_store_ner
 
 # This is a simple integration test for the NER extraction and storage logic.
-# run by executing: python -m tests.test_extract_and_store
+# run by executing: python -m tests.07_test_extract_and_store
 # then verify database by executing sqlite3 db/threat_intel.db "SELECT * FROM entities; # not running at the moment
 # enrichment test
 
