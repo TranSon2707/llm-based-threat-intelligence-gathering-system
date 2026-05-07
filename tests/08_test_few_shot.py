@@ -15,7 +15,7 @@ for ex in FEW_SHOT_EXAMPLES:
     msg = EXAMPLE_PROMPT.format(**ex)
     assert "Threat text:" in msg
     assert "Mapped TTPs" in msg
-    print("[v]", ex["text"][:60].strip(), "...")
+    print("[+]", ex["text"][:60].strip(), "...")
 
 # Check the YAML loads cleanly
 with open("config/few_shot_ttps.yaml") as f:
@@ -30,4 +30,4 @@ for ex in examples:
     assert "ttps" in ex
     for ttp in ex["ttps"]:
         assert ttp["id"].startswith("T"), f"Bad TTP ID: {ttp['id']}"
-    print("[v]", ex["id"])
+    print("[+]", ex["id"])
