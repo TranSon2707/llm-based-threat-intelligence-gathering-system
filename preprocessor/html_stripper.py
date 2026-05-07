@@ -12,6 +12,7 @@ class HTMLStripper(HTMLParser):
         self.inside_pre = False
 
     def handle_starttag(self, tag, attrs):
+        """Ignore content inside certain tags and track <pre> for preserving whitespace."""
         if tag in self.ignore_tags:
             self.skip_current = True
             
@@ -24,6 +25,7 @@ class HTMLStripper(HTMLParser):
                     self.text_data.append((f" [{value}] ", False))
 
     def handle_endtag(self, tag):
+        """Reset skip flag when exiting ignored tags and track exiting <pre>."""
         if tag in self.ignore_tags:
             self.skip_current = False
             
@@ -31,6 +33,7 @@ class HTMLStripper(HTMLParser):
             self.inside_pre = False
 
     def handle_data(self, data):
+        """Collect text data if not inside ignored tags, preserving whitespace for <pre>."""
         if not self.skip_current:
             self.text_data.append((data, self.inside_pre))
 
