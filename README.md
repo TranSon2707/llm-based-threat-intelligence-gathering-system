@@ -1,7 +1,7 @@
 ### 🚀 Local Setup & Installation
 
 **Prerequisites:**
-* Python 3.11+
+* Python 3.11.x
 * Git
 
 **1. Install Ollama**
