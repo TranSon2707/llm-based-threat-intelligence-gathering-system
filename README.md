@@ -27,7 +27,7 @@ python3 -m venv venv
   ```bash
   source venv/bin/activate
   ```
-*(Note: You should see `(venv)` appear at the beginning of your terminal prompt).*
+*(`(venv)` will appear at the beginning of your terminal prompt).*
 
 **5. Install Project Dependencies**
 
