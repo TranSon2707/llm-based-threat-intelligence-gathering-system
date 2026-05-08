@@ -1,3 +1,19 @@
+"""
+DESCRIPTION:
+This file securely removes HTML formatting from raw threat intelligence data, extracting readable text and preserving relevant URLs for analysis, 
+while mitigating evasion techniques.
+
+- Overrides Python's `html.parser.HTMLParser` to ignore content within noisy or dangerous tags (<script>, <style>, <noscript>, <iframe>, <svg>) 
+and formats hyperlink URLs into text brackets `[http...]`.
+- Strips the HTML tags (in `strip_html`) *before* unescaping HTML entities (like &lt; or &gt;) to ensure malicious encoded scripts 
+aren't accidentally rendered into executable prompt instructions.
+
+EXAMPLE RESULT:
+Input: "<p>Malware <script>alert(1)</script> found at <a href='http://evil.com'>this link</a>.</p>"
+Output: "Malware found at [http://evil.com] ."
+"""
+
+
 import html
 import unittest
 from html.parser import HTMLParser
@@ -5,7 +21,7 @@ from html.parser import HTMLParser
 class HTMLStripper(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.reset()
+        self.reset() 
         self.text_data = []
         self.ignore_tags = {'script', 'style', 'noscript', 'iframe', 'svg'}
         self.skip_current = False

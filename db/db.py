@@ -14,7 +14,7 @@ def get_db_connection():
     It also uses row_factory so query results behave like Python dictionaries.
     """
     conn = None
-    try:
+    try: 
         # Establish connection
         conn = sqlite3.connect(DB_PATH)
         

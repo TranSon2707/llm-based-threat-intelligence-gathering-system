@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import feedparser
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from typing import Any
 
@@ -53,27 +55,28 @@ class RSSCollector(BaseCollector):
         Filtering is client-side — the full feed is pulled then filtered
         by the parsed published date of each entry.
         """
-        all_records = self.normalize(self._fetch_raw())
+        raw_entries = self._fetch_raw()
 
         if year is not None:
             filtered = [
-                r for r in all_records
-                if self._entry_year(r["published_date"]) == year
+                e for e in raw_entries
+                if self._entry_year(e.get("published")) == year
             ]
         else:
             cutoff = datetime.now(timezone.utc).timestamp() - (days_back or 7) * 86400
             filtered = [
-                r for r in all_records
-                if self._entry_timestamp(r["published_date"]) >= cutoff
+                e for e in raw_entries
+                if self._entry_timestamp(e.get("published")) >= cutoff
             ]
 
-        return filtered[:max_results]
+        limited_raw = filtered[:max_results]
+        return self.normalize(limited_raw)
 
     # ── Task 2: fetch by keyword ──────────────────────────────────────────────
 
     def fetch_by_keyword(
         self,
-        query: str,
+        query: str, 
         max_results: int = 20,
     ) -> list[dict[str, Any]]:
         """
@@ -86,27 +89,50 @@ class RSSCollector(BaseCollector):
 
         Filtering is client-side — full feed is pulled then filtered.
         """
-        all_records = self.normalize(self._fetch_raw())
+        raw_entries = self._fetch_raw()
         terms = query.strip().lower().split()
 
-        matched = [
-            r for r in all_records
+        filtered = [
+            e for e in raw_entries
             if all(
-                term in r["title"].lower() or term in r["description"].lower()
+                term in str(e.get("title", "")).lower() or term in str(e.get("summary", "")).lower()
                 for term in terms
             )
         ]
-        return matched[:max_results]
+        
+        # CẮT LẤY MAX_RESULTS TRƯỚC KHI NORMALIZE VÀ SCRAPING
+        limited_raw = filtered[:max_results]
+        return self.normalize(limited_raw)
 
     # ── Normalization ─────────────────────────────────────────────────────────
 
     def normalize(self, raw_data: list[Any]) -> list[dict[str, Any]]:
         records = []
         for entry in raw_data:
+            link = entry.get("link")
+            
+            # --- SCRAPING FULL TEXT ---
+            full_description = entry.get("summary") or entry.get("description")
+            if link:
+                try:
+                    print(f"    [Scraping] Fetching full text from: {link}")
+                    # Fetch the actual web page content
+                    resp = requests.get(link, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                    if resp.status_code == 200:
+                        soup = BeautifulSoup(resp.text, 'html.parser')
+                        # Extract all text, strip HTML tags
+                        scraped_text = soup.get_text(separator=' ', strip=True)
+                        # Only use if it actually scraped meaningful content (longer than summary)
+                        if len(scraped_text) > 100: 
+                            full_description = scraped_text
+                except Exception as e:
+                    print(f"    [!] Scraping failed for {link}: {e}")
+            # --------------------------------
+            
             records.append(self.format_record(
                 title          = entry.get("title"),
-                description    = entry.get("summary") or entry.get("description"),
-                url            = entry.get("link"),
+                description    = full_description,
+                url            = link,
                 published_date = entry.get("published"),
                 # dedup_key generated automatically by format_record()
             ))
