@@ -30,7 +30,7 @@ class NVDCollector(BaseCollector):
     def __init__(self, api_key: str | None = None) -> None:
         super().__init__(source_name="nvd")
         self.base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-        self.api_key = api_key or os.getenv("OTX_API_KEY")
+        self.api_key = api_key or os.getenv("NVD_API_KEY")
         self.headers = {
             "User-Agent": "llm-threat-intel-collector/1.0",
             "Accept":     "application/json",

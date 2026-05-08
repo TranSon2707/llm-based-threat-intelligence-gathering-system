@@ -1,3 +1,15 @@
+"""
+=============================================================================
+MODULE: 03_test_integration.py
+PURPOSE: Tests the end-to-end flow from API collection to Database storage.
+HOW IT TESTS:
+1. Uses the RSSCollector to pull live data from a real feed.
+2. Uses 'collect_and_store' to automate the fetch-verify-save cycle.
+3. Asserts that new records are successfully written to the 'raw_items' table.
+COMMAND: python -m unittest tests.03_test_integration
+=============================================================================
+"""
+
 import os
 import unittest
 from pathlib import Path
@@ -21,19 +33,12 @@ class TestPipelineIntegration(unittest.TestCase):
         
         # We use RSS because it is fast and doesn't require an API key
         collector = RSSCollector()
-        
-        # This single line replaces Linh's entire 'for' loop and try/except block
+
         inserted, skipped = collector.collect_and_store(
-            db_path=Path(DB_PATH), 
-            mode="time", 
-            days_back=30
+            db_path=Path(DB_PATH), mode="time", days_back=30
         )
-        
-        print(f"[+] Pipeline Success: {inserted} inserted, {skipped} duplicates.")
-        
-        # Assertions to prove the pipeline actually wrote to the DB
-        self.assertGreater(inserted, 0, "Pipeline failed to insert any real records.")
-        self.assertGreaterEqual(skipped, 0)
+        print(f"[+] Pipeline Success: {inserted} inserted, {skipped} duplicates skipped.")
+        self.assertGreater(inserted, 0, "No records inserted from live feed.")
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

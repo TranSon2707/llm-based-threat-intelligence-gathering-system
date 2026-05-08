@@ -1,3 +1,14 @@
+"""
+=============================================================================
+MODULE: 04_test_preprocessor.py
+PURPOSE: Validates HTML stripping and XML security encapsulation logic.
+HOW IT TESTS:
+1. HTMLStripper: Verifies removal of <script>/<style> and URL extraction.
+2. Encapsulator: Ensures threat data is wrapped in <THREAT_DATA> tags 
+   and the system prompt contains mandatory security directives.
+COMMAND: python -m unittest tests.04_test_preprocessor
+=============================================================================
+"""
 import unittest
 from preprocessor.encapsulator import encapsulate_threat_data, get_secure_system_prompt, build_langchain_prompt
 from preprocessor.html_stripper import strip_html
@@ -26,7 +37,7 @@ class TestEncapsulator(unittest.TestCase):
         self.assertEqual(messages[0].type, "system")
         self.assertEqual(messages[1].type, "human")
         self.assertTrue(messages[1].content.endswith("</THREAT_DATA>"))
-        self.assertIn(f"<THREAT_DATA>\n{malicious_payload}\n</THREAT_DATA>", messages[1].content)
+        self.assertIn(f"<THREAT_DATA>\n{malicious_payload}\n</THREAT_DATA>", messages[1].content) 
 
 class TestHTMLStripper(unittest.TestCase):
     def test_basic_tag_stripping(self):

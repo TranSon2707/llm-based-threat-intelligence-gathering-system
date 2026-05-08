@@ -66,7 +66,7 @@ def insert_entity(source_id: int, entity_type: str, entity_value: str):
     """
     Saves an extracted IOC (IP, Hash, CVE) to the entities table.
     """
-    sql = "INSERT INTO entities (source_id, entity_type, entity_value) VALUES (?,?,?)"
+    sql = "INSERT OR IGNORE INTO entities (source_id, entity_type, entity_value) VALUES (?,?,?)"
     with get_db_connection() as conn:
         conn.execute(sql, (source_id, entity_type, entity_value))
 
@@ -74,7 +74,7 @@ def insert_ttp_mapping(source_id: int, ttp_id: str, technique_name: str):
     """
     Saves a MITRE ATT&CK TTP mapped by the LLM to the ttp_mappings table.
     """
-    sql = "INSERT INTO ttp_mappings (source_id, ttp_id, technique_name) VALUES (?,?,?)"
+    sql = "INSERT OR IGNORE INTO ttp_mappings (source_id, ttp_id, technique_name) VALUES (?,?,?)"
     with get_db_connection() as conn:
         conn.execute(sql, (source_id, ttp_id, technique_name))
 
@@ -83,7 +83,7 @@ def insert_report(source_id: int, summary: str):
     Saves the final LLM-generated analyst summary into the reports table.
     Default status is 'pending' for the Human-In-The-Loop review.
     """
-    sql = "INSERT INTO reports (source_id, summary, status, created_at) VALUES (?,?, 'pending',?)"
+    sql = "INSERT OR IGNORE INTO reports (source_id, summary, status, created_at) VALUES (?,?, 'pending',?)"
     created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     
     with get_db_connection() as conn:

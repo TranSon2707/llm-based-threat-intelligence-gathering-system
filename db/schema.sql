@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS entities (
     source_id INTEGER NOT NULL,         -- Links to raw_items.id
     entity_type TEXT NOT NULL,          -- 'CVE', 'IPv4', 'Domain', 'Threat_Actor', etc.
     entity_value TEXT NOT NULL,         -- The actual extracted value
+    UNIQUE(source_id, entity_type, entity_value),
     FOREIGN KEY (source_id) REFERENCES raw_items(id) ON DELETE CASCADE
 );
 
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS ttp_mappings (
     source_id INTEGER NOT NULL,         -- Links to raw_items.id
     ttp_id TEXT NOT NULL,               -- MITRE Technique ID (e.g., 'T1190')
     technique_name TEXT NOT NULL,       -- MITRE Technique Name
+    UNIQUE(source_id, ttp_id),
     FOREIGN KEY (source_id) REFERENCES raw_items(id) ON DELETE CASCADE
 );
 
@@ -41,5 +43,6 @@ CREATE TABLE IF NOT EXISTS reports (
     summary TEXT,                       -- LLM generated executive summary
     status TEXT DEFAULT 'pending',      -- HITL status: 'pending', 'approved', 'rejected'
     created_at TEXT NOT NULL,           -- UTC timestamp of report generation
+    UNIQUE(source_id)
     FOREIGN KEY (source_id) REFERENCES raw_items(id) ON DELETE CASCADE
 );

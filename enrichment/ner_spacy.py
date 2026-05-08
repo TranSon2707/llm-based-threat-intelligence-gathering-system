@@ -174,6 +174,9 @@ def extract_ner_entities(text: str) -> list[NEREntity]:
     seen:    set[tuple[str, str]] = set()
     results: list[NEREntity]      = []
 
+    # List of common words in PERSON entities that are unlikely to be actual threat actors
+    SAFE_TITLES = {"researcher", "analyst", "expert", "author", "director", "ceo", "reporter", "dr", "mr", "mrs"}
+
     for ent in doc.ents:
         raw_label = ent.label_
         raw_value = ent.text.strip()
@@ -182,6 +185,14 @@ def extract_ner_entities(text: str) -> list[NEREntity]:
             continue
 
         if raw_label == "PERSON":
+            # --- FILTER FALSE POSITIVES ---
+            # Take the token immediately preceding the PERSON entity (if any) to check for safe titles
+            prev_token = doc[ent.start - 1].text.lower() if ent.start > 0 else ""
+            
+            # If the previous token is a common safe title, skip this entity to reduce false positives
+            if prev_token in SAFE_TITLES:
+                continue
+            
             etype = "THREAT_ACTOR"
         elif raw_label == "MALWARE":
             etype = "MALWARE"
@@ -226,14 +237,3 @@ def extract_and_store_ner(source_id: int, cleaned_text: str) -> list[NEREntity]:
     )
     return entities
 
-
-if __name__ == "__main__":
-    sample = """
-    The Lazarus Group deployed WannaCry ransomware across hospital networks.
-    APT28, also known as Fancy Bear, used Emotet as a dropper to deliver Cobalt Strike.
-    Researcher John Smith attributed the attack to a North Korean threat actor.
-    """
-
-    results = extract_ner_entities(sample)
-    for e in results:
-        print(e.entity_type, "→", e.entity_value)
