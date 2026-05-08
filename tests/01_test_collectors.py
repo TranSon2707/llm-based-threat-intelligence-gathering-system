@@ -22,7 +22,7 @@ load_dotenv(find_dotenv())
 
 # --- FOR DEBUGGING ---
 print("\n" + "="*50)
-print("[DEBUG] KIỂM TRA ĐỌC FILE .ENV")
+print("[DEBUG] TESTING READING DATA FROM .ENV")
 print(f"NVD_API_KEY: {os.getenv('NVD_API_KEY')}")
 print(f"OTX_API_KEY: {os.getenv('OTX_API_KEY')}")
 print("="*50 + "\n")
