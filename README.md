@@ -62,6 +62,6 @@ OTX_API_KEY="your_alienvault_api_key_here"
 
 **10. Testing pipeline**
 ``` bash
-python -m tests.<test_module_name>  
+python -m unittest tests.<test_module_name>  
 ```
 

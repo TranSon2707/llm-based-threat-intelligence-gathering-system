@@ -135,7 +135,7 @@ class TestEndToEndRealPipeline(unittest.TestCase):
             print(final_report)
             print("*"*70 + "\n")
             
-            # Kiểm tra xem AI có tuân thủ format cho TỪNG báo cáo hay không
+            # Check if AI properly cited the source_id in the final report for traceability
             self.assertIn(f"[source_id: {source_id}]", final_report, f"LLM failed to cite the source_id for article {source_id}.")
 
 if __name__ == '__main__':

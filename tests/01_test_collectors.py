@@ -11,7 +11,6 @@ COMMAND: python -m unittest tests.01_test_collectors
 """
 import os
 import unittest
-import json
 from collectors.nvd_collector import NVDCollector
 from collectors.otx_collector import OTXCollector
 from collectors.rss_collector import RSSCollector
