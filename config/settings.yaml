@@ -1,0 +1,3 @@
+preprocessing:
+  batch_size: 10 # Number of samples to process in each batch when generating few-shot prompts. 
+  #We choose 10 to balance between providing enough examples for the model and keeping the prompt size manageable.
