@@ -66,14 +66,22 @@ def map_text_to_mitre(source_id: int, cleaned_text: str) -> list:
             
             for ttp in extracted_ttps:
                 ttp_id = ttp.get("id", "").strip()
-                technique_name = ttp.get("name", "").strip()
-                justification = ttp.get("justification", "").strip()
                 
+                # --- JUST CHECK ID AND FETCH NAME FROM OFFICIAL MITRE DATABASE ---
                 if validate_ttp_id(ttp_id):
+                    official_name = "Unknown Technique"
+                    if mitre_data:
+                        obj = mitre_data.get_object_by_attack_id(ttp_id, 'attack-pattern')
+                        if obj:
+                            # Flexibly handle both list and single object returns
+                            stix_obj = obj[0] if isinstance(obj, list) and len(obj) > 0 else obj
+                            
+                            # Safely get the technique name, accounting for both dict and object structures
+                            official_name = getattr(stix_obj, 'name', stix_obj.get('name', 'Unknown Technique'))
+                    
                     valid_ttps.append({
                         "ttp_id": ttp_id,
-                        "technique_name": technique_name,
-                        "justification": justification
+                        "technique_name": official_name
                     })
                 else:
                     print(f"[!] HALLUCINATION BLOCKED: Fabricated ID {ttp_id}")
