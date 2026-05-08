@@ -205,7 +205,7 @@ def extract_ner_entities(text: str) -> list[NEREntity]:
         if key not in seen:
             seen.add(key)
             results.append(NEREntity(entity_type=etype, entity_value=raw_value))
-
+ 
     return results
 
 

@@ -21,7 +21,7 @@ class TestAttackMapper(unittest.TestCase):
         # Simulate the MITRE database successfully finding the TTP ID
         mock_mitre_data.get_object_by_attack_id.return_value = {"id": "T1190", "name": "Exploit Public-Facing Application"}
         
-        is_valid = validate_ttp_id("T1190")
+        is_valid = validate_ttp_id("T1190") 
         print(f"\n[*] Validating T1190 (Real ID): {is_valid}")
         self.assertTrue(is_valid, "T1190 should be validated as True.")
         mock_mitre_data.get_object_by_attack_id.assert_called_with("T1190", 'attack-pattern')

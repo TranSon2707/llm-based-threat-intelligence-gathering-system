@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS ttp_mappings (
     ttp_id TEXT NOT NULL,               -- MITRE Technique ID (e.g., 'T1190')
     technique_name TEXT NOT NULL,       -- MITRE Technique Name
     UNIQUE(source_id, ttp_id),
-    FOREIGN KEY (source_id) REFERENCES raw_items(id) ON DELETE CASCADE
+    FOREIGN KEY (source_id) REFERENCES raw_items(id) ON DELETE CASCADE 
 );
 
 -- 4. Table for storing final AI reports and Human-in-the-Loop statuses

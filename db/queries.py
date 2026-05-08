@@ -29,7 +29,7 @@ def insert_raw_item(data_dict: dict) -> int:
             data_dict.get('published_date'),
             data_dict.get('collected_at'),
             data_dict.get('processed', 0),
-            raw_str,
+            raw_str, 
             data_dict.get('dedup_key')
         ))
         return cursor.lastrowid

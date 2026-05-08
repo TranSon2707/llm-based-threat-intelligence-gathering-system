@@ -5,11 +5,14 @@ Includes an anti-hallucination filter to validate generated TTP IDs against the 
 """
 import json
 import os
+import sqlite3
+
 from mitreattack.stix20 import MitreAttackData
 
 # Using the specialized factory for few-shot pipelines
 from llm.chain_builder import build_few_shot_chain
 from enrichment.few_shot_examples import FEW_SHOT_EXAMPLES, EXAMPLE_PROMPT, SYSTEM_PREFIX, SUFFIX_TEMPLATE
+from db.db import DB_PATH
 
 MITRE_FILE = "enterprise-attack.json"
 mitre_data = None
@@ -36,12 +39,11 @@ def validate_ttp_id(ttp_id: str) -> bool:
     except Exception:
         return False
 
-def map_text_to_mitre(cleaned_text: str) -> list:
+def map_text_to_mitre(source_id: int, cleaned_text: str) -> list:
     """
-    Orchestrates the mapping process by invoking the Few-Shot chain 
-    and filtering the output through the anti-hallucination layer.
+    Orchestrates the mapping process by invoking the Few-Shot chain,
+    filtering the output, and storing valid TTPs in the database.
     """
-    # Build the chain using the unified factory
     chain = build_few_shot_chain(
         examples=FEW_SHOT_EXAMPLES,
         example_prompt_str=EXAMPLE_PROMPT,
@@ -51,12 +53,10 @@ def map_text_to_mitre(cleaned_text: str) -> list:
     )
     
     print("[*] Requesting LLM to analyze MITRE ATT&CK mapping...")
-    # Execute the chain with the specific threat context
     response = chain.invoke({"threat_text": cleaned_text})
     
     valid_ttps = []
     try:
-        # Extract JSON block from the LLM's text response
         start_idx = response.find('[')
         end_idx = response.rfind(']') + 1
         
@@ -64,19 +64,38 @@ def map_text_to_mitre(cleaned_text: str) -> list:
             json_str = response[start_idx:end_idx]
             extracted_ttps = json.loads(json_str)
             
-            # Cross-validate every prediction against the MITRE database
             for ttp in extracted_ttps:
                 ttp_id = ttp.get("id", "").strip()
                 technique_name = ttp.get("name", "").strip()
+                justification = ttp.get("justification", "").strip()
                 
                 if validate_ttp_id(ttp_id):
                     valid_ttps.append({
                         "ttp_id": ttp_id,
                         "technique_name": technique_name,
-                        "justification": ttp.get("justification", "")
+                        "justification": justification
                     })
                 else:
                     print(f"[!] HALLUCINATION BLOCKED: Fabricated ID {ttp_id}")
+                    
+            # --- SAVE TO DATABASE ---
+            if valid_ttps:
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    for ttp in valid_ttps:
+                        # Dùng INSERT OR IGNORE để tránh crash do UNIQUE constraint
+                        cursor.execute(
+                            """INSERT OR IGNORE INTO ttp_mappings (source_id, ttp_id, technique_name) 
+                               VALUES (?, ?, ?)""",
+                            (source_id, ttp["ttp_id"], ttp["technique_name"])
+                        )
+                    conn.commit()
+                    conn.close()
+                    print(f"[*] Successfully saved verified TTPs to the database.")
+                except Exception as db_err:
+                    print(f"[!] Database Error while saving TTPs: {db_err}")
+                    
         else:
             print("[!] Error: LLM response did not contain a valid JSON array.")
             

@@ -24,7 +24,7 @@ class TestPipelineIntegration(unittest.TestCase):
             os.remove(DB_PATH)
         init_db()
 
-    def test_full_collection_pipeline(self):
+    def test_full_collection_pipeline(self): 
         """
         Tests hitting a REAL API and saving it directly to the Database 
         using the orchestrator method.

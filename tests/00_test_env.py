@@ -1,3 +1,8 @@
+"""
+This test script verifies that the local environment is properly set up for both spaCy and the Ollama LLM.
+Commands:
+- python -m tests.00_test_env
+"""
 import spacy
 import requests
 
@@ -20,7 +25,7 @@ def test_ollama_environment():
         else:
             print(f"[-] Ollama returned unexpected status: {health_check.status_code}")
             return
-    except requests.exceptions.ConnectionError:
+    except requests.exceptions.ConnectionError: 
         print("[-] Ollama connection failed. Is the Ollama app running?")
         return
 

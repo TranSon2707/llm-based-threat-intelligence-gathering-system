@@ -1,6 +1,14 @@
 """
 =============================================================================
 MODULE: test_e2e_real_pipeline.py
+PURPOSE: Executes a full end-to-end test of the entire pipeline using real data.
+HOW IT TESTS:   
+1. Collects recent data from RSS, NVD, and OTX sources.
+2. Runs the preprocessing pipeline on the collected data.   
+3. Extracts entities using both regex and spaCy methods.
+4. Maps the cleaned text to MITRE TTPs using a local LLM (Llama 3).
+5. Generates and prints the final RAG report.     
+COMMAND: python -m unittest tests.test_e2e_real_pipeline
 =============================================================================
 """
 import unittest
@@ -64,7 +72,7 @@ class TestEndToEndRealPipeline(unittest.TestCase):
                        VALUES (:source, :title, :description, :source_url, :published_date, :collected_at, :processed, '{}', :dedup_key)""",
                     item
                 )
-            except sqlite3.IntegrityError:
+            except sqlite3.IntegrityError: 
                 pass # Ignore duplicates if any
         conn.commit()
         conn.close()
@@ -101,9 +109,12 @@ class TestEndToEndRealPipeline(unittest.TestCase):
         # PHASE 4: LLM MAPPING & REPORTING (Llama 3)
         # ---------------------------------------------------------
         print("\n[PHASE 4] FIRING UP LOCAL LLM (LLAMA 3)...")
-        mapped_ttps = map_text_to_mitre(secured_text)
+
+        # Find valid TTPs and save to DB
+        mapped_ttps = map_text_to_mitre(source_id=source_id, cleaned_text=secured_text)
         print(f" -> Identified {len(mapped_ttps)} valid TTPs.")
 
+        # Generate final report based on all extracted info (entities + TTPs), cite source_id for traceability
         final_report = generate_analyst_summary(
             source_id=source_id,
             cleaned_text=cleaned_text,

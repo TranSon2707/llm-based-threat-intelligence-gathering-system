@@ -23,7 +23,7 @@ class TestReportGenerator(unittest.TestCase):
         mock_chain.invoke.return_value = fake_report
         
         print("\n[*] Simulating Closed-Domain RAG execution...")
-        result = generate_analyst_summary(
+        result = generate_analyst_summary( 
             source_id=104, 
             cleaned_text="The adversary exploited an Apache server.", 
             entities_list=[{"type": "IPv4", "value": "192.168.1.1"}], 

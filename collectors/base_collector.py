@@ -198,4 +198,4 @@ def _db_connection(db_path: Path):
         conn.rollback()
         raise
     finally:
-        conn.close()
+        conn.close() 

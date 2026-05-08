@@ -70,7 +70,7 @@ SUFFIX_TEMPLATE = (
 
 # ── Five curated examples ─────────────────────────────────────────────────────
 
-FEW_SHOT_EXAMPLES: list[dict[str, str]] = [
+FEW_SHOT_EXAMPLES: list[dict[str, str]] = [ 
 
     # ------------------------------------------------------------------
     # Example 1 – Initial Access via unpatched web application (Log4Shell)

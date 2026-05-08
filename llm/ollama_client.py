@@ -22,6 +22,6 @@ def get_llm():
     """
     return OllamaLLM(
         model="llama3",
-        base_url="http://localhost:11434",
+        base_url="http://localhost:11434", 
         temperature=0 
     )

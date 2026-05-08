@@ -23,7 +23,7 @@ except ImportError as e:
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-def run_preprocessing_batch(batch_size: int = 10) -> list:
+def run_preprocessing_batch(batch_size: int = 10) -> list: 
     """
     Executes the preprocessing pipeline for a specific batch size.
     Returns a list of dictionaries containing the sanitized items.

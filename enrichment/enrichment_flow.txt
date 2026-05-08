@@ -18,7 +18,7 @@ STAGE 2: SEMANTIC ENTITY RECOGNITION (NER)
 - Strategy: The base 'en_core_web_sm' model is augmented with a custom pattern catalogue of 60+ entries. This ensures that domain-specific jargon (like 'Fancy Bear') is correctly labeled as THREAT_ACTOR rather than a generic person or organization.
 
 STAGE 3: THE KNOWLEDGE ENGINE - FEW-SHOT MAPPING
--------------------------------------------------
+------------------------------------------------- 
 - Primary Files: few_shot_examples.py (Knowledge Base) & attack_mapper.py (Execution Engine).
 - Mechanism: In-Context Learning (ICL) using Llama 3 via LangChain.
 - Deep Dive - few_shot_examples.py:

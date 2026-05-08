@@ -45,5 +45,5 @@ class TestDatabaseLogic(unittest.TestCase):
         print("[*] Marked as processed. New unprocessed count: 0")
         self.assertEqual(len(get_unprocessed_batch(1)), 0)
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
     unittest.main(verbosity=2)

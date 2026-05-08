@@ -21,7 +21,7 @@ from html.parser import HTMLParser
 class HTMLStripper(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.reset()
+        self.reset() 
         self.text_data = []
         self.ignore_tags = {'script', 'style', 'noscript', 'iframe', 'svg'}
         self.skip_current = False

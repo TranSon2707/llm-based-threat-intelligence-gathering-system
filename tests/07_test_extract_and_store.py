@@ -25,7 +25,7 @@ class TestStoreIntegration(unittest.TestCase):
         Researcher John Smith attributed the attack to a North Korean threat actor.
         Another group, LAPSUS$, was observed using RedLine Stealer to harvest credentials."""
         print(f"\n[*] Processing Text for DB: {text}")
-        
+         
         extract_and_store(source_id=1, cleaned_text=text)
         extract_and_store_ner(source_id=1, cleaned_text=text)
         

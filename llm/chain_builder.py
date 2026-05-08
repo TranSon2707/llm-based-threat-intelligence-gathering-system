@@ -33,7 +33,7 @@ def build_few_shot_chain(examples: list, example_prompt_str: PromptTemplate, sys
     
     # Return the assembled runnable chain
     return prompt | llm
-
+ 
 def build_standard_chain(template_str: str, input_vars: list):
     """
     Builds a standard LangChain pipeline for general tasks.

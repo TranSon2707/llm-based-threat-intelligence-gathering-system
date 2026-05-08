@@ -76,7 +76,7 @@ class RSSCollector(BaseCollector):
 
     def fetch_by_keyword(
         self,
-        query: str,
+        query: str, 
         max_results: int = 20,
     ) -> list[dict[str, Any]]:
         """

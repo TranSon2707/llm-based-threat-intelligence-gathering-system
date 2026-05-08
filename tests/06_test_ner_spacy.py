@@ -23,7 +23,7 @@ class TestNERSpacy(unittest.TestCase):
         print("\n" + "="*50)
         print("[--- ORIGINAL COMPLEX SAMPLE TEXT ---]")
         print(sample.strip())
-        print("="*50)
+        print("="*50) 
 
         results = extract_ner_entities(sample)
         

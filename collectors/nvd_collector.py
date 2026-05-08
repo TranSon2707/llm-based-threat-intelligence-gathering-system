@@ -105,7 +105,7 @@ class NVDCollector(BaseCollector):
             if cvss_severity:
                 params = cvss_severity
 
-            return self._paginate(params, max_results)
+            return self._paginate(params, max_results) 
 
     # ── Task 2: fetch by keyword or CVE ID ────────────────────────────────────
 

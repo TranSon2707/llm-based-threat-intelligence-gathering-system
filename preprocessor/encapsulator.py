@@ -18,3 +18,4 @@ def encapsulate_threat_data(sanitized_text: str) -> str:
         return "<THREAT_DATA></THREAT_DATA>"
     return f"<THREAT_DATA>\n{sanitized_text}\n</THREAT_DATA>"
 
+ 

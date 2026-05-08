@@ -17,7 +17,7 @@ Extracted entity types
 All results are written to the `entities` table via db/queries.py.
 
 Usage
------
+----- 
     from enrichment.entity_extractor import extract_and_store
 
     # cleaned_text  : output of preprocessor/html_stripper.strip_html()
