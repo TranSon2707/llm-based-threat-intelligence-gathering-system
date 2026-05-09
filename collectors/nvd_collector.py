@@ -21,8 +21,8 @@ class NVDCollector(BaseCollector):
     https://nvd.nist.gov/developers/vulnerabilities
 
     Rate limits:
-        No API key : 5 requests / 30 s  → DEFAULT_DELAY = 6.0 s
-        With API key: 50 requests / 30 s → DEFAULT_DELAY = 0.6 s
+        No API key : 5 requests / 30 s  -> DEFAULT_DELAY = 6.0 s
+        With API key: 50 requests / 30 s -> DEFAULT_DELAY = 0.6 s
     """
 
     DEFAULT_DELAY = 6.0
