@@ -9,7 +9,7 @@ import hashlib
 
 from collectors.base_collector import BaseCollector
 
-# Well-known security RSS feeds — extend as needed
+# Well-known security RSS feeds - extend as needed
 KNOWN_FEEDS: dict[str, str] = {
     "exploitdb":         "https://www.exploit-db.com/rss.xml",
     "bleeping_computer": "https://www.bleepingcomputer.com/feed/",
@@ -23,7 +23,7 @@ class RSSCollector(BaseCollector):
     Defaults to Exploit-DB. No API key required.
 
     Fixes applied:
-        FIX 1 — dedup_key is now present in every record automatically
+        FIX 1 - dedup_key is now present in every record automatically
                  because format_record() in BaseCollector generates it.
                  No code changes needed in this file.
 
@@ -53,7 +53,7 @@ class RSSCollector(BaseCollector):
             col.fetch_by_time()           # entries from last 7 days
             col.fetch_by_time(year=2023)  # entries published in 2023
 
-        Filtering is client-side — the full feed is pulled then filtered
+        Filtering is client-side - the full feed is pulled then filtered
         by the parsed published date of each entry.
         """
         raw_entries = self._fetch_raw()
@@ -88,7 +88,7 @@ class RSSCollector(BaseCollector):
             - 'wanna'      → partial match, case-insensitive
             - 'apache rce' → ALL words must appear (AND logic)
 
-        Filtering is client-side — full feed is pulled then filtered.
+        Filtering is client-side - full feed is pulled then filtered.
         """
         raw_entries = self._fetch_raw()
         terms = query.strip().lower().split()
