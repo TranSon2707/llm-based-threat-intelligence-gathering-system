@@ -3,6 +3,7 @@
 **Prerequisites:**
 * Python 3.11.x
 * Git
+* Docker Desktop
 
 **1. Install Ollama**
 * Download and install from https://ollama.com/download
@@ -13,54 +14,60 @@ git clone https://github.com/cle15102005/llm-based-threat-intelligence-gathering
 cd llm-based-threat-intelligence-gathering-system
 ```
 
-**3. Create a Virtual Environment**
+**3. Create and activate a Virtual Environment**
 ```bash
+#Create
 python3 -m venv venv
+
+#Activate - Windows:
+venv\Scripts\activate
+
+#Activate - Mac / Linux:
+source venv/bin/activate
 ```
 
-**4. Activate the Virtual Environment**
-* **Windows:**
-  ```bash
-  venv\Scripts\activate
-  ```
-* **Mac / Linux:**
-  ```bash
-  source venv/bin/activate
-  ```
-*(`(venv)` will appear at the beginning of your terminal prompt).*
-
-**5. Install Project Dependencies**
+**4. Install Project Dependencies**
 
 With the environment activated, install the locked requirements:
 ```bash
 pip install -r requirements.txt
-```
-
-**6. Download Required NLP Models**
-```bash
 python -m spacy download en_core_web_sm
 ```
 
-**7. Verify the Environment**
+**5. Verify the Environment**
 ```bash
 pip check
 ```
-If the terminal returns `No broken requirements found.`, your Python environment is ready!
 
-**8. Pull the Local LLM Model**
+**6. Pull the Local LLM Model for Reasoning and Embedding.**
+We use `llama3` for report generation and `nomic-embed-text` for GraphRAG semantic search.
 ```bash
 ollama pull llama3
+ollama pull nomic-embed-text
 ```
 
-**9. Configure Environment Variables**
+**7. Install and Run Neo4j via Docker**
+We use Neo4j to store and correlate threat actors, malware, and CVEs.
+```bash
+docker run --name threat-graph -p 7474:7474 -p 7687:7687 -d -e NEO4J_AUTH=neo4j/password neo4j:latest
+```
+Open http://localhost:7474 in your browser to access the Neo4j Query Console. 
+
+**User:** `neo4j` | **Password:** `password'`. 
+
+**8. Configure Environment Variables**
 
 Create a .env file in the root directory and add your API keys:
 ``` bash
-NVD_API_KEY="your_nvd_api_key_here" #OPTIONAL
-OTX_API_KEY="your_alienvault_api_key_here"
+NVD_API_KEY="your_key" #optional
+OTX_API_KEY="your_key"
+REDDIT_CLIENT_ID="your_id"
+REDDIT_CLIENT_SECRET="your_secret"
+REDDIT_USER_AGENT="ThreatIntel_Collector_v1.0"
+NEO4J_PASSWORD="your_neo4j_password_here"
 ```
 
-**10. Testing pipeline**
+**9. Testing pipeline**
 ``` bash
 python -m [unittest] tests.<test_module_name>  
 ```

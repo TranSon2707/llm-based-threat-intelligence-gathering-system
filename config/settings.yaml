@@ -1,3 +1,0 @@
-preprocessing:
-  batch_size: 10 # Number of articles to process in each batch.
-  # We choose 10 to balance between efficiency and resource usage. Adjust based on your system's capabilities.

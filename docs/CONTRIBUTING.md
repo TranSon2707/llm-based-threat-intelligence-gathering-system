@@ -40,25 +40,6 @@ Each team member works on their own branch. Never commit directly to `main`.
 - Python 3.11.x required
 - Docstrings on every public class and method
 
-### No hardcoded values
-
-| What | Where it goes |
-|---|---|
-| API keys | `.env` file, loaded via `python-dotenv` |
-| File paths | `settings.yaml` or `config.py` |
-| Model name | `settings.yaml` (`OLLAMA_MODEL`) |
-| Batch sizes | `settings.yaml` (`BATCH_SIZE`) |
-| DB path | `settings.yaml` (`DB_PATH`) |
-
-```python
-# wrong
-conn = sqlite3.connect("data/threat_intel.db")
-
-# correct
-from config import DB_PATH
-conn = sqlite3.connect(DB_PATH)
-```
-
 ### No inline SQL
 
 All SQLite logic lives strictly in `db/queries.py`. 
@@ -160,25 +141,14 @@ Add any new libraries to `requirements.txt`:
 praw>=7.7.0
 ```
 
-### Step 3 - Add to settings
-
-Register the new source in `settings.yaml`:
-
-```yaml
-collectors:
-nvd:      enabled: true
-otx:      enabled: true
-exploitdb: enabled: true
-reddit:   enabled: true    # ← add this
-```
-
-### Step 4 - Wire into CLI
+### Step 3 - Wire into CLI
 
 In `cli/main.py`, add the new collector to the `collect` subcommand:
 
 ```python
 # cli/main.py - inside build_collectors()
-if settings.collectors.reddit.enabled:
+import os
+if os.getenv("ENABLE_REDDIT", "true").lower() == "true":
     from collectors.reddit_collector import RedditCollector
     collectors.append(RedditCollector(
         client_id     = os.getenv("REDDIT_CLIENT_ID"),
@@ -193,7 +163,7 @@ REDDIT_CLIENT_ID=
 REDDIT_CLIENT_SECRET=
 ```
 
-### Step 5 - Write tests
+### Step 4 - Write tests
 
 Create `tests/test_reddit_collector.py`.
 At minimum, test:
@@ -212,7 +182,7 @@ def test_fetch_by_time_year_mode():
     """year= parameter restricts results to that calendar year."""
 ```
 
-### Step 6 - Update docs
+### Step 5 - Update docs
 
 Add the new source to:
 - `ARCHITECTURE.md` - Sources table in Stage 1
@@ -354,108 +324,6 @@ git rebase --continue
 git push --force-with-lease origin feat/collectors
 ```
 
-### Never do these
-
-```bash
-# Never commit directly to main
-git checkout main && git commit ...   # forbidden
-
-# Never force push to main
-git push --force origin main          # forbidden
-
-# Never commit .env or the database
-git add .env                          # forbidden
-git add data/threat_intel.db          # forbidden
-```
-
-`.gitignore` should contain:
-
-```
-.env
-data/
-reports/
-*.db
-__pycache__/
-.venv/
-venv/
-*.egg-info/
-```
-
----
-
-## Testing Requirements
-
-### Test file location
-
-```
-tests/
-├── test_nvd_collector.py
-├── test_otx_collector.py
-├── test_rss_collector.py
-├── test_entity_extractor.py
-├── test_ner_spacy.py
-├── test_deduplicator.py
-├── test_html_stripper.py
-└── test_queries.py
-```
-
-### Minimum test coverage per module
-
-| Module | Required tests |
-|---|---|
-| Every collector | `normalize()` output keys, `dedup_key` determinism, empty result on bad input |
-| `entity_extractor.py` | Each regex type (CVE, IPv4, IPv6, domain, MD5, SHA1, SHA256), false-positive suppression, dedup within one text |
-| `ner_spacy.py` | Known malware names detected, known APT groups detected, PERSON label mapped to THREAT_ACTOR |
-| `deduplicator.py` | Same CVE from two sources → one processed record, SHA-256 collision test |
-| `html_stripper.py` | Tags removed, whitespace normalised, empty string handled |
-| `queries.py` | `insert_entity` dedup (INSERT OR IGNORE), `mark_processed` sets flag, `get_unprocessed_batch` respects limit |
-
-### Test isolation - no real API calls in tests
-
-Use `unittest.mock.patch` to mock all HTTP calls:
-
-```python
-from unittest.mock import patch, MagicMock
-
-def test_nvd_fetch_by_keyword_returns_normalised_records():
-    mock_response = MagicMock()
-    mock_response.json.return_value = {
-        "totalResults": 1,
-        "vulnerabilities": [{
-            "cve": {
-                "id": "CVE-2021-44228",
-                "published": "2021-12-10T00:00:00.000",
-                "descriptions": [{"lang": "en", "value": "Log4Shell RCE"}],
-                "metrics": {},
-                "weaknesses": [],
-            }
-        }]
-    }
-    mock_response.raise_for_status = MagicMock()
-
-    with patch("requests.Session.get", return_value=mock_response):
-        col = NVDCollector()
-        results = col.fetch_by_keyword("log4shell")
-
-    assert len(results) == 1
-    assert results[0]["title"] == "CVE-2021-44228"
-    assert "dedup_key" in results[0]
-    assert len(results[0]["dedup_key"]) == 64   # SHA-256 hex
-```
-
-### Running tests
-
-```bash
-# All tests
-pytest tests/ -v
-
-# Single module
-pytest tests/test_entity_extractor.py -v
-
-# With coverage report
-pytest tests/ --cov=collectors --cov=enrichment --cov=db --cov-report=term-missing
-```
-
 ---
 
 ## Absolute Rules
@@ -471,6 +339,6 @@ These rules are non-negotiable. Violating any of them will block your PR.
 | 5 | **No real HTTP calls** in unit tests - mock all external requests |
 | 6 | **No bare `except:`** - always catch specific exceptions |
 | 7 | **`normalize()` must call `format_record()`** - never construct the record dict manually |
-| 8 | **Preprocessor order is fixed**: strip → dedup → encapsulate - never reorder |
+| 8 | **Preprocessor order is fixed**: strip -> dedup -> encapsulate - never reorder |
 | 9 | **`temperature=0`** on all LLM calls for factual/mapping tasks |
 | 10 | **Every LLM claim cites `source_id`** in report output - no uncited facts |

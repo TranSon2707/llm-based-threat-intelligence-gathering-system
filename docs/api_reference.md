@@ -1,7 +1,7 @@
 # API Reference
 
 > LLM-Based Threat Intelligence Gathering System  
-> IT4413E — Penetration Testing | HUST SOICT | 2025
+> IT4413E - Penetration Testing | HUST SOICT | 2025
 
 All public methods across `collectors/` and `db/queries.py`.
 Internal helpers (prefixed `_`) are documented in source docstrings only.
@@ -62,7 +62,7 @@ Fetch records within a time window. Implemented by each subclass.
 | `year` | `int \| None` | `None` | Full calendar year, e.g. `2021`. Takes priority over `days_back`. |
 | `max_results` | `int` | `200` | Hard cap on total records returned. |
 
-**Returns:** `list[dict]` — normalised records matching `format_record()` schema.
+**Returns:** `list[dict]` - normalised records matching `format_record()` schema.
 
 **Complexity:** O(N/P) requests where N = matching records, P = page size.
 
@@ -91,10 +91,10 @@ match required.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `query` | `str` | — | Search term. Plain word, phrase, or CVE ID. |
+| `query` | `str` | - | Search term. Plain word, phrase, or CVE ID. |
 | `max_results` | `int` | `20` | Hard cap on results. |
 
-**Returns:** `list[dict]` — normalised records.
+**Returns:** `list[dict]` - normalised records.
 
 **Complexity:** O(K/P) requests where K = matching records.
 
@@ -118,16 +118,16 @@ def collect_and_store(
 ) -> tuple[int, int]
 ```
 
-Chains fetch → DB insert in one call. Concrete method — available on all
+Chains fetch -> DB insert in one call. Concrete method - available on all
 subclasses without override.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `db_path` | `Path` | — | Path to SQLite database file. |
-| `mode` | `str` | `"time"` | `"time"` → calls `fetch_by_time(**fetch_kwargs)`. `"keyword"` → calls `fetch_by_keyword(**fetch_kwargs)`. |
-| `**fetch_kwargs` | — | — | Forwarded to the chosen fetch method. |
+| `db_path` | `Path` | - | Path to SQLite database file. |
+| `mode` | `str` | `"time"` | `"time"` -> calls `fetch_by_time(**fetch_kwargs)`. `"keyword"` -> calls `fetch_by_keyword(**fetch_kwargs)`. |
+| `**fetch_kwargs` | - | - | Forwarded to the chosen fetch method. |
 
-**Returns:** `(inserted: int, skipped: int)` — inserted = new records, skipped = duplicates blocked by `dedup_key`.
+**Returns:** `(inserted: int, skipped: int)` - inserted = new records, skipped = duplicates blocked by `dedup_key`.
 
 **Complexity:** O(N · log M) where N = fetched records, M = existing DB rows.
 
@@ -170,7 +170,7 @@ dedup_key field:
             BaseCollector defaults to SHA-256(source + title + description[:300]).
             Subclasses override this to use immutable structural IDs (e.g., `nvd:{cve_id}`, `otx:id:{pulse_id}`, 
             `reddit:{post_id}:{updated_date}`) to allow SQLite Upserts to capture evolving threats.
-**Complexity:** O(1) — SHA-256 computed on input.
+**Complexity:** O(1) - SHA-256 computed on input.
 
 ---
 
@@ -181,8 +181,8 @@ dedup_key field:
 Fetches CVE data from NVD REST API v2.
 
 **Rate limits:**
-- No key: 5 req / 30 s → `DEFAULT_DELAY = 6.0 s`
-- With key: 50 req / 30 s → `DEFAULT_DELAY = 0.6 s`
+- No key: 5 req / 30 s -> `DEFAULT_DELAY = 6.0 s`
+- With key: 50 req / 30 s -> `DEFAULT_DELAY = 0.6 s`
 
 ---
 
@@ -214,7 +214,7 @@ to `BaseCollector.fetch_by_time()`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `cvss_severity` | `str \| None` | `None` | Filter by CVSS v3 severity. Accepted: `"LOW"`, `"MEDIUM"`, `"HIGH"`, `"CRITICAL"`. Passed to NVD `cvssV3Severity` parameter — filtered server-side, no extra cost. `None` returns all severities. |
+| `cvss_severity` | `str \| None` | `None` | Filter by CVSS v3 severity. Accepted: `"LOW"`, `"MEDIUM"`, `"HIGH"`, `"CRITICAL"`. Passed to NVD `cvssV3Severity` parameter - filtered server-side, no extra cost. `None` returns all severities. |
 
 **Raises:** `ValueError` if `cvss_severity` is not a valid label.
 
@@ -238,8 +238,8 @@ def fetch_by_keyword(
 
 Auto-detects CVE ID format and routes accordingly:
 
-- `query` matches `CVE-YYYY-NNNNN` → exact `cveId` NVD endpoint
-- Otherwise → `keywordSearch` full-text endpoint (fuzzy, case-insensitive)
+- `query` matches `CVE-YYYY-NNNNN` -> exact `cveId` NVD endpoint
+- Otherwise -> `keywordSearch` full-text endpoint (fuzzy, case-insensitive)
 
 NVD's `keywordSearch` searches across CVE ID, description, and reference URLs.
 Partial words work: `"wanna"` matches records containing "WannaCry".
@@ -270,7 +270,7 @@ Extracted fields per record:
 | `raw.cvss_vector` | Vector string | `metrics.cvssMetricV31[0].cvssData.vectorString` |
 | `raw.cwes` | Weakness IDs | `weaknesses[].description[].value` (CWE-* only) |
 
-CVSS preference order: v3.1 → v3.0 → v2.
+CVSS preference order: v3.1 -> v3.0 -> v2.
 
 ---
 
@@ -319,7 +319,7 @@ Full-text search across pulse title, description, and tags.
 Partial and case-insensitive matching supported server-side.
 
 For CVE-ID specific lookup (pulses that structurally tagged this CVE
-as an IOC), use `fetch_by_cve_id()` instead — more precise than keyword.
+as an IOC), use `fetch_by_cve_id()` instead - more precise than keyword.
 
 ---
 
@@ -340,7 +340,7 @@ merely mention the ID in free text.
 |---|---|---|
 | `cve_id` | `str` | CVE identifier. Normalised to uppercase. E.g. `"CVE-2017-0144"`. |
 
-**Returns:** `list[dict]` — normalised pulse records. Each record includes
+**Returns:** `list[dict]` - normalised pulse records. Each record includes
 `raw["linked_cve"]` set to the queried CVE ID.
 
 **Returns empty list** (not an error) if no pulses are linked.
@@ -350,12 +350,12 @@ merely mention the ID in free text.
 **Typical usage:**
 ```python
 # Cross-source correlation:
-# Step 1 — NVD gives you the CVE details
+# Step 1 - NVD gives you the CVE details
 cve_record = nvd.fetch_by_keyword("CVE-2017-0144")[0]
 
-# Step 2 — OTX shows which active campaigns exploit it
+# Step 2 - OTX shows which active campaigns exploit it
 pulses = otx.fetch_by_cve_id("CVE-2017-0144")
-# → WannaCry campaign, NotPetya campaign, etc.
+# -> WannaCry campaign, NotPetya campaign, etc.
 ```
 
 ---
@@ -370,7 +370,7 @@ Extracted fields per OTX pulse:
 | `description` | `pulse.description` |
 | `raw.adversary` | `pulse.adversary` |
 | `raw.malware_families` | `pulse.malware_families[].display_name` |
-| `raw.attack_ids` | `pulse.attack_ids[].id` — MITRE ATT&CK IDs if pulse author tagged them |
+| `raw.attack_ids` | `pulse.attack_ids[].id` - MITRE ATT&CK IDs if pulse author tagged them |
 | `raw.ioc_counts` | Dict of `{type: count}` e.g. `{IPv4: 3, domain: 5}` |
 | `raw.tags` | `pulse.tags` |
 
@@ -410,7 +410,7 @@ def __init__(self, feed_url: str = KNOWN_FEEDS["exploitdb"]) -> None
 
 ### `fetch_by_time()`
 
-Client-side filtering — full feed is pulled, then filtered by parsed
+Client-side filtering - full feed is pulled, then filtered by parsed
 `published` date of each entry.
 
 Both `days_back` and `year` modes supported. Date parsing handles RFC-2822
@@ -424,7 +424,7 @@ for older years.
 
 ### `fetch_by_keyword()`
 
-Client-side filtering — full feed is pulled, then filtered by keyword
+Client-side filtering - full feed is pulled, then filtered by keyword
 presence in `title` or `description`.
 
 **Multi-word AND logic:** all words in `query` must appear.
@@ -547,12 +547,12 @@ Search processed records (`processed=1`) by keyword in title or description.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `query` | `str` | — | Search term, matched with SQL `LIKE %query%`. |
+| `query` | `str` | - | Search term, matched with SQL `LIKE %query%`. |
 | `db_path` | `Path` | `DB_PATH` | Path to SQLite database. |
 
 **Returns:** `list[dict]` ordered by `published_date DESC`. Empty list if not found.
 
-**Complexity:** O(N · L) — full table scan with LIKE.
+**Complexity:** O(N · L) - full table scan with LIKE.
 Add FTS5 virtual table if N > 100,000.
 
 ---
@@ -571,7 +571,7 @@ Exact CVE-ID lookup in processed records.
 **Returns:** Single record dict, or `None` if not found.
 Callers should handle `None` and display "Not found" to the user.
 
-**Complexity:** O(N) — scan on `title` column.
+**Complexity:** O(N) - scan on `title` column.
 Add `CREATE INDEX idx_raw_title ON raw_items(title)` if needed.
 
 ---
@@ -588,7 +588,7 @@ def get_unprocessed_batch(
 Returns up to `limit` records where `processed=0`, ordered by `collected_at`.
 Used by `preprocessor/pipeline.py` to pull its next batch.
 
-**Complexity:** O(log N + B) — index scan on `processed`, B = batch size.
+**Complexity:** O(log N + B) - index scan on `processed`, B = batch size.
 
 ---
 
@@ -604,7 +604,7 @@ def mark_processed(
 Sets `processed=1` for the given `raw_items.id`.
 Called by preprocessor after strip + dedup + encapsulate completes.
 
-**Complexity:** O(log N) — primary key update.
+**Complexity:** O(log N) - primary key update.
 
 ---
 
@@ -630,7 +630,7 @@ Insert a single extracted entity. Uses `INSERT OR IGNORE` so duplicate
 | `entity_value` | `str` | The extracted value, e.g. `"192.168.1.1"`, `"WannaCry"`. |
 | `confidence` | `float` | Confidence score 0.0–1.0. Default 1.0 for regex matches, lower for NER. |
 
-**Complexity:** O(log E) — B-tree insert with UNIQUE constraint check.
+**Complexity:** O(log E) - B-tree insert with UNIQUE constraint check.
 
 ---
 
@@ -711,7 +711,7 @@ Executes semantic similarity search (GraphRAG vector retrieval).
 |`target_vector` | `list[float]` | - | The 768-dimensional array generated by `embedding_service.py` for the current threat. |
 |`top_k` | `int` | 5 | Strict limit on returned neighbors to prevent LLM context window overflow. |
 
-**Returns:** Subgraph dictionary containing the `top_k` historically similar attacks. Injected directly into the Llama 3.2 prompt context.
+**Returns:** Subgraph dictionary containing the `top_k` historically similar attacks. Injected directly into the Llama3 prompt context.
 
 **Complexity:** O(log V) approximate retrieval using Neo4j HNSW vector indexing.
 
@@ -769,7 +769,7 @@ All collector methods follow these conventions:
 | Invalid `cvss_severity` | Raise `ValueError` immediately with valid options listed |
 | DB duplicate on insert | Executed as `ON CONFLICT DO UPDATE`. Modifies existing row and resets `processed=0` if structural ID matches. |
 | spaCy model not found | Raise `RuntimeError` with install instruction |
-| Ollama not running | `ConnectionError` propagated — check with `check_ollama_running()` |
+| Ollama not running | `ConnectionError` propagated - check with `_check_connection()` |
 
-**No collector ever raises on network failure** — it logs and returns an empty
+**No collector ever raises on network failure** - it logs and returns an empty
 list so the pipeline can continue with other sources.
