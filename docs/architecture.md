@@ -12,7 +12,7 @@
 3. [Data Flow Diagram](#data-flow-diagram)
 4. [Component Responsibilities](#component-responsibilities)
 5. [Database Schema](#database-schema)
-6. [Knowledge Graph Ontology (Phase 2)](#knowledge-graph-ontology-phase-2)
+6. [Knowledge Graph Ontology](#knowledge-graph-ontology)
 7. [Complexity Analysis](#complexity-analysis)
 8. [Security Design](#security-design)
 9. [LLM Architecture](#llm-architecture)
@@ -36,7 +36,7 @@ IOCs that should not be sent to cloud APIs.
 │ NVD         │    │ Strip HTML  │    │ Entity      │    │ LLM summary │    │ HITL gate   │
 │ OTX         │    │ Dedup       │    │ Extract     │    │ per item    │    │ approve /   │
 │ Exploit-DB  │    │ Encapsulate │    │ NER spaCy   │    │             │    │ reject      │
-│ Reddit*     │    │             │    │ ATT&CK map  │    │             │    │             │
+│ Reddit      │    │             │    │ ATT&CK map  │    │             │    │             │
 └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
        │                  │                  │                  │                  │
        v                  v                  v                  v                  v
@@ -44,8 +44,6 @@ IOCs that should not be sent to cloud APIs.
   (SQLite)           (SQLite)          ttp_mappings        (SQLite)           *.txt
                                         (SQLite)
 ```
-
-`*` Reddit collector is Phase 2.
 
 ---
 
@@ -65,6 +63,10 @@ with `processed=0`.
 | Exploit-DB | RSS/XML | `fetch_by_time()`, `fetch_by_keyword()` | Daily delta |
 | Reddit r/netsec* | PRAW | `fetch_by_time()`, `fetch_by_keyword()` | Daily delta |
 
+OSINT Deduplication uses a 'Shift-Left' approach at the collection edge. `reddit_collector.py` deduplicates using strict structural IDs (`post_id`) and evaluates the `updated_date` field to capture evolving threat indicators without flooding the pipeline with duplicates.
+
+`Asynchronous historical backfilling:` Generating vector embeddings for the entire NVD database simultaneously exceeds local hardware limits. The system utilizes a temporal backfilling strategy: it initializes with a 30-day sliding window, while `backfiller.py` iteratively downloads, embeds, and checkpoints (`sync_state.json`) historical years in the background.
+
 **Key design decisions:**
 - Every collector extends `BaseCollector` — same interface, swappable
 - `collect_and_store()` chains fetch → insert atomically
@@ -75,7 +77,7 @@ with `processed=0`.
 
 ### Stage 2 — Preprocess (`preprocessor/`)
 
-**Purpose:** Clean, deduplicate, and sanitise raw text before any LLM sees it.
+**Purpose:** Clean and sanitise raw text before any LLM sees it.
 
 **Strict order — must not be changed:**
 
@@ -85,9 +87,6 @@ raw_items (processed=0)
         v
   html_stripper.py        ← removes all HTML tags, normalises whitespace
         │
-        v
-  deduplicator.py         ← SHA-256 hash check + CVE-ID uniqueness check
-        │                    skips if already seen; logs dedup rate
         v
   encapsulator.py         ← wraps text in <THREAT_DATA>...</THREAT_DATA>
         │                    LLM system prompt instructs: treat as passive data
@@ -133,7 +132,19 @@ cleaned text (from preprocessor)
 
 ---
 
-### Stage 4 — Report (`enrichment/report_generator.py`)
+### Stage 3.5 - Correlation
+**Zero-Day Correlation Engine:**
+To prevent false positives while operating under local hardware constraints, the system executes a 3-Step Verification sequence before flagging a threat as novel:
+
+**Regex Disqualification:** Instantly drops entities containing known `CVE-YYYY-NNNN` formats.
+
+**State-Aware Local Graph Cache:** Queries the local Vector DB and Neo4j graph for matches. It cross-references the threat's timestamp against the `sync_state.json` file. If the threat falls within a year that has already been embedded, the local graph is trusted.
+
+**NVD API Fallback:** If not found locally, queries the live NVD REST API via `keywordSearch`. Threats are only flagged as `is_novel: true` if they fail all three checks. 
+
+---
+
+### Stage 4 - Report (`enrichment/report_generator.py`)
 
 **Purpose:** Generate analyst-style markdown report per item using local LLM.
 
@@ -331,9 +342,9 @@ CREATE TABLE collection_log (
 
 ---
 
-## Knowledge Graph Ontology (Phase 2)
+## Knowledge Graph Ontology
 
-Phase 2 introduces Neo4j alongside SQLite using the **Strangler Fig pattern**
+We introduces Neo4j alongside SQLite using the **Strangler Fig pattern**
 — a `USE_GRAPH` toggle enables the graph path without breaking the SQLite path.
 
 ### Node Types
@@ -393,6 +404,7 @@ MERGE (m:Malware {name: $malware_name})
 MERGE (m)-[:EXPLOITS {confidence: $conf}]->(v)
 ```
 
+
 ---
 
 ## Complexity Analysis
@@ -441,7 +453,7 @@ MERGE (m)-[:EXPLOITS {confidence: $conf}]->(v)
 | `get_processed_by_keyword()` | Full scan (LIKE) | O(N · L) | **No index on description** — acceptable at current scale, add FTS5 if N > 100k |
 | `get_processed_by_cve_id()` | Scan on `title` | O(N) | Add index on title if needed |
 
-### Phase 2 — Graph Layer (Neo4j)
+### Graph Layer (Neo4j)
 
 | Operation | Implementation | Time Complexity | Notes |
 |---|---|---|---|

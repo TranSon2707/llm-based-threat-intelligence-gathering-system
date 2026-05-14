@@ -14,9 +14,13 @@ Internal helpers (prefixed `_`) are documented in source docstrings only.
 2. [NVDCollector](#nvdcollector)
 3. [OTXCollector](#otxcollector)
 4. [RSSCollector](#rsscollector)
-5. [db/queries.py](#dbqueriespy)
-6. [Record Schema](#record-schema)
-7. [Error Handling](#error-handling)
+5. [RedditCollector](#redditcollector)
+6. [BaselineSyncManager](#baselinesyncmanager)
+7. [db/queries.py](#dbqueriespy)
+8. [Record Schema](#record-schema)
+9. [GraphConnector](#graphconnector)
+10. [CorrelationEngine](#correlationengine)
+11. [Error Handling](#error-handling)
 
 ---
 
@@ -162,7 +166,11 @@ Concrete helper. Produces the standard DB-ready dict. All subclass
 **Returns:** `dict` with keys: `source`, `title`, `description`, `source_url`,
 `published_date`, `collected_at`, `processed`, `raw`, `dedup_key`.
 
-**Complexity:** O(1) — SHA-256 computed on fixed-length input (capped at 300 chars).
+dedup_key field:
+            BaseCollector defaults to SHA-256(source + title + description[:300]).
+            Subclasses override this to use immutable structural IDs (e.g., `nvd:{cve_id}`, `otx:id:{pulse_id}`, 
+            `reddit:{post_id}:{updated_date}`) to allow SQLite Upserts to capture evolving threats.
+**Complexity:** O(1) — SHA-256 computed on input.
 
 ---
 
@@ -430,12 +438,99 @@ rss.fetch_by_keyword("WannaCry")     # single term, case-insensitive partial mat
 
 ---
 
+## RedditCollector 
+
+### `collectors/reddit_collector.py`
+
+Fetches unstructured threat intelligence and Proof-of-Concept (PoC) discussions from technical subreddits (e.g., `r/netsec`, `r/cybersecurity`) using PRAW.
+
+**Shift-Left Deduplication:** Unlike NVD/OTX which rely on the global preprocessor dedup, Reddit relies on structural post_id and updated_date evaluations at collection time to handle evolving zero-day posts without dropping newly added Indicators of Compromise (IoCs).
+
+`__init__(client_id, client_secret, user_agent)`
+
+```bash
+def __init__(
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    user_agent: str = "ThreatIntel_Collector_v1.0"
+) -> None
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+|`client_id` | `str` | `None` | Reddit API Client ID. Falls back to `.env`. |
+|`client_secret` | `str` | `None` | Reddit API Secret. Falls back to `.env`. |
+|`user_agent` | `str` | Default | Required by PRAW. Must be descriptive to prevent API bans. |
+
+`fetch_by_time()`
+
+```bash
+def fetch_by_time(
+    days_back: int | None = 7,
+    subreddits: list[str] = ["netsec", "cybersecurity"],
+    max_results: int = 100,
+) -> list[dict[str, Any]]
+```
+
+Pulls top/new posts from specified subreddits within the temporal window.
+Returns: `list[dict]` - normalized records. Includes `raw["confidence_score"]` based on subreddit reputation and presence of external links/code blocks.
+
+`normalize()`
+
+Extracted fields per Reddit post:
+
+| Field | Source | Location in PRAW response | 
+|---|---|---|
+|`title` | Post Title | `submission.title` |
+| `description` | Post Body | `submission.selftext` |
+| `published_date` | Created UTC | `submission.created_utc` (converted to ISO-8601) |
+| `raw.post_id` | Reddit ID | `submission.id` (Used for Shift-Left Dedup) |
+| `raw.updated_date` | Edited UTC | `submission.edited` (Used to trigger Graph updates)|
+|`raw.confidence_score`| Calculated | Heuristic float (0.0 - 1.0). High if code/PoC linked. | 
+
+---
+
+## BaselineSyncManager
+### `collectors/backfiller.py`
+
+Manages the asynchronous temporal backfilling of NVD data to the local Vector Database, bypassing the RAM limitations of bulk JSON processing.
+
+`run_sync()`
+```bash
+def run_sync() -> tuple[list[dict], str]
+```
+
+Executes the daily 30-day sliding window sync via the NVD REST API v2 and downloads the latest MITRE ATT&CK STIX JSON.
+
+**Complexity:** O(N/P) where N = CVEs modified in the last 30 days. Fits safely in local RAM.
+
+`run_backfill()`
+
+```bash
+def run_backfill() -> None
+```
+
+Asynchronous background worker. Downloads historical NVD datasets year-by-year (starting from current year down to 1999), embeds descriptions into 768-dimensional vectors, and stores them in Neo4j.
+
+**State Management:** Utilizes `sync_state.json` to checkpoint progress. If the script crashes or is paused to free CPU resources, it resumes precisely at the last completed year.
+
+---
+
 ## db/queries.py
 
 `db/queries.py`
 
 **Rule:** This is the only file that writes SQL. No other module in the
 codebase may contain inline SQL statements.
+
+---
+
+### `upsert_raw_item()`
+```bash
+def upsert_raw_item(record: dict[str, Any], db_path: Path = DB_PATH) -> None
+```
+
+Inserts a new raw item into SQLite. If the `dedup_key` already exists, it executes an `ON CONFLICT DO UPDATE`. This allows the system to capture evolving threats. When a Reddit post or OTX pulse is edited with new IoCs, the database overwrites the old description and resets processed=0, forcing the LLM to re-evaluate the new data.
 
 ---
 
@@ -588,6 +683,79 @@ The `raw` field contents by source:
 
 ---
 
+## GraphConnector
+### `db/graph_connector.py`
+
+The Neo4j interface. Replaces `db/queries.py` when `USE_GRAPH = True`.
+
+`insert_threat_intel()`
+```bash
+def insert_threat_intel(extracted_entities: dict[str, Any]) -> None
+```
+
+Executes Cypher `MERGE` commands to inject nodes and edges. Acts as a secondary deduplication layer by merging new relationships (e.g., new IoCs from an updated Reddit post) into existing nodes based on identity constraints.
+
+**Complexity:** O(log V) per node insertion using Neo4j B-Tree indexing.
+
+`search_similar_threats()`
+```bash
+def search_similar_threats(
+    target_vector: list[float],
+    top_k: int = 5
+) -> list[dict]
+```
+Executes semantic similarity search (GraphRAG vector retrieval).
+
+| Parameter | Type | Default | Description | 
+|---|---|---|---|
+|`target_vector` | `list[float]` | - | The 768-dimensional array generated by `embedding_service.py` for the current threat. |
+|`top_k` | `int` | 5 | Strict limit on returned neighbors to prevent LLM context window overflow. |
+
+**Returns:** Subgraph dictionary containing the `top_k` historically similar attacks. Injected directly into the Llama 3.2 prompt context.
+
+**Complexity:** O(log V) approximate retrieval using Neo4j HNSW vector indexing.
+
+---
+
+## CorrelationEngine
+### `enrichment/correlation_engine.py`
+
+Handles zero-day detection and subgraph extraction. Executes the multi-stage search funnel to overcome O(N^2) graph traversal limitations.
+
+`verify_zero_day()`
+```bash
+def verify_zero_day(
+    extracted_entities: dict[str, Any],
+    graph_db: GraphDB
+) -> bool
+```
+
+Executes the 3-Step True Zero-Day Verification logic.
+
+| Parameter | Type | Description | 
+|---|---|---|
+|`extracted_entities` | `dict` | Output from the LLM extraction phase (Target, Malware, TTPs). |
+| `graph_db` | `GraphDB` | Instantiated connection to Neo4j. | 
+
+**Execution Flow:**
+
+**Regex Check:** Returns `False` if a valid `CVE-YYYY-NNNN` is present.
+
+**State-Aware Graph Cache:** Checks `graph_db` for exact matches. Cross-references `sync_state.json` to ensure the temporal window is valid. Returns `False` if matched.
+
+**API Fallback:** Calls `check_historical_nvd()`. Returns `False` if found.
+
+**Returns:** True if the threat is genuinely novel (fails all three checks), `False` otherwise.
+
+`check_historical_nvd()`
+```bash
+def check_historical_nvd(keyword: str) -> bool
+```
+
+Live fallback check querying the NVD API via `keywordSearch`. Prevents False Positives caused by older CVEs appearing before the asynchronous `backfiller.py` has embedded their specific year.
+
+---
+
 ## Error Handling
 
 All collector methods follow these conventions:
@@ -599,7 +767,7 @@ All collector methods follow these conventions:
 | CVE not found | Print `[!] CVE not found: <id>`, return empty list |
 | No OTX pulses for CVE | Print `[!] No OTX pulses found for <id>`, return empty list |
 | Invalid `cvss_severity` | Raise `ValueError` immediately with valid options listed |
-| DB duplicate on insert | Silently skipped via `INSERT OR IGNORE` / `IntegrityError` catch |
+| DB duplicate on insert | Executed as `ON CONFLICT DO UPDATE`. Modifies existing row and resets `processed=0` if structural ID matches. |
 | spaCy model not found | Raise `RuntimeError` with install instruction |
 | Ollama not running | `ConnectionError` propagated — check with `check_ollama_running()` |
 

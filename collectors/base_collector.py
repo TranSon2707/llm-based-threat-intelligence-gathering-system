@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import os
 import datetime
 import hashlib
-import json
-import sqlite3
+#import json
+#import sqlite3
 import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-
+from db import queries
+#from db.graph_connector import insert_threat_intel
 
 class BaseCollector(ABC):
     """
@@ -23,6 +25,8 @@ class BaseCollector(ABC):
     def __init__(self, source_name: str) -> None:
         self.source_name = source_name
         self._last_request: float = 0.0
+        # Phase 2: Strangler Fig Toggle
+        self.use_graph = os.getenv("USE_GRAPH", "False").lower() == "true"
 
     # ── Abstract interface ────────────────────────────────────────────────────
 
@@ -34,7 +38,7 @@ class BaseCollector(ABC):
         max_results: int = 200,
     ) -> list[dict[str, Any]]:
         """
-        Task 1 — Fetch records within a time window.
+        Task 1 - Fetch records within a time window.
 
         Two modes (mutually exclusive, year takes priority if both given):
           - days_back : last N days rolling from now  (default 7)
@@ -77,25 +81,21 @@ class BaseCollector(ABC):
         **fetch_kwargs: Any,
     ) -> tuple[int, int]:
         """
-        Chains fetch → DB insert in one call.
+        Chains fetch -> DB insert in one call.
+        Routes through db/queries.py to maintain strict SQL isolation.
 
         Args:
             db_path      : path to the SQLite database file.
-            mode         : 'time'    → calls fetch_by_time(**fetch_kwargs)
-                           'keyword' → calls fetch_by_keyword(**fetch_kwargs)
+            mode         : 'time'    -> calls fetch_by_time(**fetch_kwargs)
+                           'keyword' -> calls fetch_by_keyword(**fetch_kwargs)
             fetch_kwargs : forwarded directly to the chosen fetch method.
 
         Returns:
             (inserted, skipped)
                 inserted — new records written to DB.
                 skipped  — duplicates blocked by dedup_key UNIQUE constraint.
-
-        Usage by preprocessor/pipeline.py:
-            nvd.collect_and_store(DB_PATH, mode="time", days_back=7)
-            nvd.collect_and_store(DB_PATH, mode="time", year=2021,
-                                  cvss_severity="CRITICAL")
-            otx.collect_and_store(DB_PATH, mode="keyword", query="WannaCry")
         """
+
         if mode == "keyword":
             records = self.fetch_by_keyword(**fetch_kwargs)
         else:
@@ -103,30 +103,27 @@ class BaseCollector(ABC):
 
         inserted = skipped = 0
 
-        with _db_connection(db_path) as conn:
+        # --- Phase 2: Graph Path ---
+        if self.use_graph:
+            print(f"[*] {self.source_name}: Routing data to Neo4j Knowledge Graph...")
             for record in records:
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO raw_items
-                            (source, title, description, source_url,
-                             published_date, collected_at, processed,
-                             raw, dedup_key)
-                        VALUES
-                            (:source, :title, :description, :source_url,
-                             :published_date, :collected_at, :processed,
-                             :raw, :dedup_key)
-                        """,
-                        {**record, "raw": json.dumps(record.get("raw", {}))},
-                    )
-                    inserted += 1
-                except sqlite3.IntegrityError:
-                    # UNIQUE constraint on dedup_key — genuine duplicate, skip
-                    skipped += 1
+                # insert_threat_intel(record)
+                inserted += 1
+            return inserted, 0
+
+        # --- Phase 1: Legacy SQLite Path ---
+        for record in records:
+            try:
+                # ALL SQLite logic is strictly delegated to queries.py
+                queries.upsert_raw_item(record, db_path)
+                inserted += 1
+            except Exception as e:
+                print(f"[!] Database error on insert: {e}")
+                skipped += 1
 
         print(
-            f"[{self.source_name}] stored {inserted} new record(s), "
-            f"skipped {skipped} duplicate(s)."
+            f"[{self.source_name}] processed {inserted} record(s), "
+            f"skipped/errored {skipped}."
         )
         return inserted, skipped
 
@@ -161,6 +158,7 @@ class BaseCollector(ABC):
         """
         clean_title = title.strip() if title else "No Title"
         clean_desc  = description.strip() if description else "No Description"
+        safe_raw = raw or {}
 
         return {
             "source":         self.source_name,
@@ -171,15 +169,18 @@ class BaseCollector(ABC):
             "collected_at":   datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "processed":      0,
             "raw":            raw or {},
-            "dedup_key":      self._make_dedup_key(clean_title, clean_desc),
+            "dedup_key":      self._make_dedup_key(clean_title, clean_desc, safe_raw),
         }
 
-    def _make_dedup_key(self, title: str, description: str) -> str:
-        """SHA-256 fingerprint."""
+    def _make_dedup_key(self, title: str, description: str, raw: dict) -> str:
+        """
+        Default SHA-256 fingerprint. 
+        Subclasses can override this to use structural IDs (e.g., post_id).
+        """
         content = f"{self.source_name}:{title}:{description[:300]}"
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-
+'''
 # ── Internal DB helper ────────────────────────────────────────────────────────
 
 @contextmanager
@@ -198,4 +199,5 @@ def _db_connection(db_path: Path):
         conn.rollback()
         raise
     finally:
-        conn.close() 
+        conn.close()
+''' 

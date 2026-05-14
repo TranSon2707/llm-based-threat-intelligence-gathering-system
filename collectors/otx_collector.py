@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import Any
-
+import hashlib
 from collectors.base_collector import BaseCollector
 
 
@@ -177,6 +177,7 @@ class OTXCollector(BaseCollector):
                 url            = f"https://otx.alienvault.com/pulse/{pulse_id}",
                 published_date = pulse.get("created"),
                 raw            = {
+                    "pulse_id":         pulse_id,
                     "adversary":        pulse.get("adversary", ""),
                     "malware_families": [
                         m.get("display_name", "")
@@ -191,6 +192,20 @@ class OTXCollector(BaseCollector):
             ))
         return records
 
+    # ── Override _make_dedup_key ──────────────────────────────────────────────
+    def _make_dedup_key(self, title: str, description: str, raw: dict) -> str:
+        """
+        Override: Hash the immutable pulse_id to maintain a consistent 64-character 
+        SHA-256 schema, while ensuring SQLite upsert work for updated pulses.
+        """
+        pulse_id = raw.get("pulse_id")
+        if pulse_id:
+            content = f"{self.source_name}:id:{pulse_id}"
+            return hashlib.sha256(content.encode("utf-8")).hexdigest()
+            
+        # Fallback to the base class default if extraction failed
+        return super()._make_dedup_key(title, description, raw)
+    
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _paginate_activity(

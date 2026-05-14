@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from typing import Any
+import hashlib
 
 from collectors.base_collector import BaseCollector
 
@@ -110,7 +111,9 @@ class RSSCollector(BaseCollector):
         records = []
         for entry in raw_data:
             link = entry.get("link")
-            
+            # RSS entries usually have an explicit 'id' or 'guid', fallback to link
+            entry_id = entry.get("id") or link
+
             # --- SCRAPING FULL TEXT ---
             full_description = entry.get("summary") or entry.get("description")
             if link:
@@ -134,10 +137,29 @@ class RSSCollector(BaseCollector):
                 description    = full_description,
                 url            = link,
                 published_date = entry.get("published"),
-                # dedup_key generated automatically by format_record()
+                raw            = {
+                    "entry_id": entry_id 
+                }
             ))
         return records
 
+    # ── Override _make_dedup_key ──────────────────────────────────────────────
+    def _make_dedup_key(self, title: str, description: str, raw: dict) -> str:
+        """
+        Override: Hash the immutable RSS entry ID or URL.
+        This prevents dynamic website changes (like navbars) from altering the 
+        hash and flooding the database with duplicates.
+        """
+        entry_id = raw.get("entry_id")
+        
+        if entry_id:
+            content = f"{self.source_name}:id:{entry_id}"
+        else:
+            # Absolute fallback if feed is completely malformed
+            content = f"{self.source_name}:{title}"
+            
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _fetch_raw(self) -> list[Any]:

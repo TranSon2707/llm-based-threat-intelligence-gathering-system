@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import Any
-
+import hashlib
 from collectors.base_collector import BaseCollector
 
 # Regular expression to identify CVE IDs (e.g., CVE-2021-44228)
@@ -84,7 +84,8 @@ class NVDCollector(BaseCollector):
                     "startIndex":     0,
                 }
                 if cvss_severity:
-                    params = cvss_severity
+                    #params = cvss_severity
+                    params["cvssV3Severity"] = cvss_severity
 
                 all_results.extend(self._paginate(params, remaining))
                 
@@ -103,7 +104,8 @@ class NVDCollector(BaseCollector):
                 "startIndex":     0,
             }
             if cvss_severity:
-                params = cvss_severity
+                #params = cvss_severity
+                params["cvssV3Severity"] = cvss_severity
 
             return self._paginate(params, max_results) 
 
@@ -118,11 +120,11 @@ class NVDCollector(BaseCollector):
         Search CVEs by keyword, phrase, or exact CVE ID.
 
         Matching behavior:
-            - Plain word  'wannacry'       → fuzzy, NVD searches full description
-            - Phrase      'apache log4j'   → both words must appear
-            - Partial     'wanna'          → still matches WannaCry entries
-            - CVE ID      'CVE-2021-44228' → routed to exact-ID endpoint
-            - Multi-word  'log4shell rce'  → treated as phrase search by NVD
+            - Plain word  'wannacry'       -> fuzzy, NVD searches full description
+            - Phrase      'apache log4j'   -> both words must appear
+            - Partial     'wanna'          -> still matches WannaCry entries
+            - CVE ID      'CVE-2021-44228' -> routed to exact-ID endpoint
+            - Multi-word  'log4shell rce'  -> treated as phrase search by NVD
 
         No exact match required — NVD keywordSearch is full-text across
         CVE ID, description, and reference URLs.
@@ -170,6 +172,16 @@ class NVDCollector(BaseCollector):
             ))
         return records
 
+    # ── Override _make_dedup_key───────────────────────────────────────────────
+    def _make_dedup_key(self, title: str, description: str, raw: dict) -> str:
+        """
+        Override: Hash the immutable CVE-ID to maintain a consistent 64-character 
+        SHA-256 schema, while ensuring SQLite upsert work for updated CVEs.
+        """
+        # The 'title' field for NVD records is always the CVE ID
+        content = f"{self.source_name}:id:{title}"
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _paginate(self, params: dict, max_results: int) -> list[dict[str, Any]]:
