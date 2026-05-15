@@ -171,9 +171,15 @@ class OTXCollector(BaseCollector):
                 t = ind.get("type", "unknown")
                 ioc_counts[t] = ioc_counts.get(t, 0) + 1
 
+            # Handle cases where description is empty but tags exist, or both are empty
+            raw_desc = pulse.get("description")
+            if not raw_desc:
+                tags = pulse.get("tags", [])
+                raw_desc = f"Tags: {', '.join(tags)}" if tags else f"Pulse Name: {pulse.get('name')}"
+
             records.append(self.format_record(
                 title          = pulse.get("name"),
-                description    = pulse.get("description"),
+                description    = raw_desc,
                 url            = f"https://otx.alienvault.com/pulse/{pulse_id}",
                 published_date = pulse.get("created"),
                 raw            = {
