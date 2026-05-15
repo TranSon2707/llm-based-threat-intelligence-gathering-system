@@ -84,9 +84,9 @@ class RSSCollector(BaseCollector):
         Search RSS entries by keyword in title or description.
 
         Matching behavior:
-            - 'WannaCry'   → matches any entry mentioning WannaCry
-            - 'wanna'      → partial match, case-insensitive
-            - 'apache rce' → ALL words must appear (AND logic)
+            - 'WannaCry'   -> matches any entry mentioning WannaCry
+            - 'wanna'      -> partial match, case-insensitive
+            - 'apache rce' -> ALL words must appear (AND logic)
 
         Filtering is client-side - full feed is pulled then filtered.
         """

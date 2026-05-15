@@ -126,7 +126,7 @@ class NVDCollector(BaseCollector):
             - CVE ID      'CVE-2021-44228' -> routed to exact-ID endpoint
             - Multi-word  'log4shell rce'  -> treated as phrase search by NVD
 
-        No exact match required — NVD keywordSearch is full-text across
+        No exact match required - NVD keywordSearch is full-text across
         CVE ID, description, and reference URLs.
         """
         query = query.strip()

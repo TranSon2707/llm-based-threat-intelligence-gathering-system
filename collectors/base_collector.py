@@ -55,14 +55,14 @@ class BaseCollector(ABC):
         max_results: int = 20,
     ) -> list[dict[str, Any]]:
         """
-        Task 2 — Search by keyword, phrase, or CVE ID.
+        Task 2 - Search by keyword, phrase, or CVE ID.
 
-          - Plain word   'wannacry'       → fuzzy full-text search
-          - Phrase       'apache log4j'   → both words must appear
-          - Partial      'wanna'          → still matches WannaCry
-          - CVE ID       'CVE-2021-44228' → exact-ID endpoint (NVD) or
+          - Plain word   'wannacry'       -> fuzzy full-text search
+          - Phrase       'apache log4j'   -> both words must appear
+          - Partial      'wanna'          -> still matches WannaCry
+          - CVE ID       'CVE-2021-44228' -> exact-ID endpoint (NVD) or
                                             full-text (OTX / RSS)
-          - Multi-word   'log4shell rce'  → AND logic on RSS
+          - Multi-word   'log4shell rce'  -> AND logic on RSS
         """
         pass
 
@@ -92,8 +92,8 @@ class BaseCollector(ABC):
 
         Returns:
             (inserted, skipped)
-                inserted — new records written to DB.
-                skipped  — duplicates blocked by dedup_key UNIQUE constraint.
+                inserted - new records written to DB.
+                skipped  - duplicates blocked by dedup_key UNIQUE constraint.
         """
 
         if mode == "keyword":
@@ -152,8 +152,8 @@ class BaseCollector(ABC):
             Truncating description to 300 chars keeps the hash stable even
             when a source appends trailing metadata on repeat fetches.
 
-            Same CVE arriving from NVD and OTX → two distinct dedup_keys
-            (source is part of the hash) → both records kept, which is correct
+            Same CVE arriving from NVD and OTX -> two distinct dedup_keys
+            (source is part of the hash) -> both records kept, which is correct
             because they carry different metadata (CVSS vs IOC counts).
         """
         clean_title = title.strip() if title else "No Title"

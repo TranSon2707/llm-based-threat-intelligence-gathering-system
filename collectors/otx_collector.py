@@ -74,10 +74,10 @@ class OTXCollector(BaseCollector):
         Search OTX pulses by keyword, threat name, or malware family.
 
         Matching behavior:
-            - 'WannaCry'       → matches pulses about the WannaCry campaign
-            - 'wanna'          → partial match, still finds WannaCry pulses
-            - 'ransomware'     → matches any pulse tagged/described as ransomware
-            - 'CVE-2021-44228' → matches pulses referencing Log4Shell by text
+            - 'WannaCry'       -> matches pulses about the WannaCry campaign
+            - 'wanna'          -> partial match, still finds WannaCry pulses
+            - 'ransomware'     -> matches any pulse tagged/described as ransomware
+            - 'CVE-2021-44228' -> matches pulses referencing Log4Shell by text
 
         OTX search is full-text across pulse title, description, and tags.
         Partial and case-insensitive matching supported server-side.
@@ -116,7 +116,7 @@ class OTXCollector(BaseCollector):
         Typical usage in the enrichment pipeline:
             # NVD returns CVE-2017-0144 (EternalBlue)
             pulses = otx.fetch_by_cve_id("CVE-2017-0144")
-            # → returns WannaCry, NotPetya, and other campaigns exploiting it
+            # -> returns WannaCry, NotPetya, and other campaigns exploiting it
 
         Args:
             cve_id : CVE identifier string, e.g. 'CVE-2017-0144'.

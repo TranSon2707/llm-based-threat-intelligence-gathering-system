@@ -40,6 +40,7 @@ pip check
 ```
 
 **6. Pull the Local LLM Model for Reasoning and Embedding.**
+
 We use `llama3` for report generation and `nomic-embed-text` for GraphRAG semantic search.
 ```bash
 ollama pull llama3
@@ -53,7 +54,7 @@ docker run --name threat-graph -p 7474:7474 -p 7687:7687 -d -e NEO4J_AUTH=neo4j/
 ```
 Open http://localhost:7474 in your browser to access the Neo4j Query Console. 
 
-**User:** `neo4j` | **Password:** `password'`. 
+**User:** `neo4j` | **Password:** `password`. 
 
 **8. Configure Environment Variables**
 
