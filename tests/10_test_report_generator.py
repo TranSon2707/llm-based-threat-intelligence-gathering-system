@@ -10,7 +10,7 @@ COMMAND: python -m unittest tests.10_test_report_generator
 """
 import unittest
 from unittest.mock import MagicMock, patch
-from enrichment.report_generator import generate_analyst_summary
+from reports.report_generator import generate_analyst_summary
 
 class TestReportGenerator(unittest.TestCase):
     @patch('enrichment.report_generator.build_standard_chain')

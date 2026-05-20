@@ -28,7 +28,7 @@ from preprocessor.pipeline import run_preprocessing_batch
 from enrichment.entity_extractor import extract_and_store
 from enrichment.ner_spacy import extract_and_store_ner
 from enrichment.attack_mapper import map_text_to_mitre
-from enrichment.report_generator import generate_analyst_summary
+from reports.report_generator import generate_analyst_summary
 
 class TestEndToEndRealPipeline(unittest.TestCase):
     @classmethod

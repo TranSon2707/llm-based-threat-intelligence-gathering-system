@@ -16,7 +16,7 @@ COMMAND: python -m unittest tests.11_test_security
 import unittest
 
 from preprocessor.encapsulator import encapsulate_threat_data
-from enrichment.report_generator import generate_analyst_summary
+from reports.report_generator import generate_analyst_summary
 
 class TestPromptInjectionDefense(unittest.TestCase):
     

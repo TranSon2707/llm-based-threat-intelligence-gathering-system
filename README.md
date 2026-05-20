@@ -48,6 +48,7 @@ ollama pull nomic-embed-text
 ```
 
 **7. Install and Run Neo4j via Docker**
+
 We use Neo4j to store and correlate threat actors, malware, and CVEs.
 ```bash
 docker-compose up -d
