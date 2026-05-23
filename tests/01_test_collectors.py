@@ -16,7 +16,6 @@ from dotenv import load_dotenv, find_dotenv
 from collectors.nvd_collector import NVDCollector
 from collectors.otx_collector import OTXCollector
 from collectors.rss_collector import RSSCollector, KNOWN_FEEDS
-from collectors.reddit_collector import RedditCollector
 
 load_dotenv(find_dotenv())
 
@@ -112,10 +111,8 @@ def run_profiler(collector, mode: str = "time", label: str = "", **kwargs) -> li
 if __name__ == "__main__":
     print("=" * 60)
     print("[DEBUG] ENVIRONMENT VERIFICATION")
-    print(f"NVD_API_KEY          : {'[SET]' if os.getenv('NVD_API_KEY')          else '[MISSING]'}")
-    print(f"OTX_API_KEY          : {'[SET]' if os.getenv('OTX_API_KEY')          else '[MISSING]'}")
-    print(f"REDDIT_CLIENT_ID     : {'[SET]' if os.getenv('REDDIT_CLIENT_ID')     else '[MISSING]'}")
-    print(f"REDDIT_CLIENT_SECRET : {'[SET]' if os.getenv('REDDIT_CLIENT_SECRET') else '[MISSING]'}")
+    print(f"NVD_API_KEY          : {'[SET]' if os.getenv('NVD_API_KEY')          else '[MISSING]'}\"")
+    print(f"OTX_API_KEY          : {'[SET]' if os.getenv('OTX_API_KEY')          else '[MISSING]'}\"")
     print("=" * 60)
 
     TEST_MAX_RESULTS = 5
@@ -169,12 +166,11 @@ if __name__ == "__main__":
     run_profiler(otx, mode="time", label="OTX",
                  days_back=7, max_results=TEST_MAX_RESULTS)
 
-    # ── Reddit ────────────────────────────────────────────────────────────────
-    reddit = RedditCollector()
+    # ── Reddit via RSS (no API key needed) ──────────────────────────────────
+    reddit_rss = RSSCollector(feed_url=KNOWN_FEEDS["reddit_netsec"])
 
-    run_profiler(reddit, mode="keyword", label="Reddit",
-                 query=TEST_KEYWORD, max_results=TEST_MAX_RESULTS)
-
-    # FIX 5: add time mode so fetch_by_time() is exercised
-    run_profiler(reddit, mode="time", label="Reddit",
+    run_profiler(reddit_rss, mode="time", label="RSS | Reddit r/netsec",
                  days_back=7, max_results=TEST_MAX_RESULTS)
+
+    run_profiler(reddit_rss, mode="keyword", label="RSS | Reddit r/netsec",
+                 query=TEST_KEYWORD, max_results=TEST_MAX_RESULTS)

@@ -3,15 +3,11 @@ from __future__ import annotations
 import os
 import datetime
 import hashlib
-#import json
-#import sqlite3
 import time
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from db import queries
-#from db.graph_connector import insert_threat_intel
 
 class BaseCollector(ABC):
     """

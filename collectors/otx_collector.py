@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from dotenv import load_dotenv
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -20,7 +19,7 @@ class OTXCollector(BaseCollector):
     DEFAULT_DELAY = 1.0
 
     def __init__(self, api_key: str | None = None) -> None:
-        super().__init__(source_name="alienvault") 
+        super().__init__(source_name="alienvault")
         self.api_key = api_key or os.getenv("OTX_API_KEY")
         self.base_url = "https://otx.alienvault.com/api/v1"
         self.headers = {

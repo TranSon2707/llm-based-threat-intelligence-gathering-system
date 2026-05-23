@@ -17,6 +17,11 @@ KNOWN_FEEDS: dict[str, str] = {
     "packet_storm":      "https://rss.packetstormsecurity.com/files/",
     # EXTENSION POINT: Add more feeds here as needed
     "xakep":             "https://xakep.ru/category/news/feed/",  # Russian - passes through language_detector.py
+    # Reddit public RSS feeds (no API key required)
+    "reddit_netsec":        "https://www.reddit.com/r/netsec/.rss",
+    "reddit_cybersecurity": "https://www.reddit.com/r/cybersecurity/.rss",
+    "reddit_blueteamsec":   "https://www.reddit.com/r/blueteamsec/.rss",
+    "reddit_redteamsec":    "https://www.reddit.com/r/redteamsec/.rss",
 }
 
 # ---------------------------------------------------------------------------
@@ -80,8 +85,12 @@ def _domain_cfg(url: str) -> dict:
 
 class RSSCollector(BaseCollector):
     """
-    Fetches threat intelligence from public RSS feeds.
-    Defaults to Exploit-DB. No API key required.
+    Fetches threat intelligence from public RSS/Atom feeds.
+    Defaults to Exploit-DB. No API key required for any feed.
+
+    Reddit subreddits (netsec, cybersecurity, blueteamsec, redteamsec) are
+    available via their public RSS endpoints in KNOWN_FEEDS - no PRAW or
+    Reddit API credentials needed.
 
     Scraping strategy (per request, applied in normalize()):
       1. Try domain-specific CSS selectors from DOMAIN_CONFIG.
@@ -95,8 +104,16 @@ class RSSCollector(BaseCollector):
 
     DEFAULT_DELAY = 2.0
 
-    def __init__(self, feed_url: str = KNOWN_FEEDS["exploitdb"]) -> None:
-        super().__init__(source_name="exploit-db")
+    def __init__(self, feed_url: str = KNOWN_FEEDS["exploitdb"], source_name: str | None = None) -> None:
+        # Derive a sensible source_name from the feed URL when not supplied.
+        # e.g. "https://www.reddit.com/r/netsec/.rss" -> "reddit_netsec"
+        if source_name is None:
+            # Check if the feed_url matches a known feed key; use that as name
+            source_name = next(
+                (key for key, url in KNOWN_FEEDS.items() if url == feed_url),
+                "rss",   # generic fallback for custom feed URLs
+            )
+        super().__init__(source_name=source_name)
         self.feed_url = feed_url
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -302,10 +319,17 @@ class RSSCollector(BaseCollector):
 
     def _fetch_raw(self) -> list[Any]:
         """Pull and parse the RSS feed. Returns feedparser entry objects."""
-        import requests, ssl
+        import requests
         try:
+            # Reddit requires a descriptive User-Agent; other feeds accept a
+            # browser-like UA.  We send the bot-style header unconditionally -
+            # it works for all feeds and avoids Reddit's 429 rate-limit block.
+            headers = {
+                "User-Agent": "ThreatIntel_Collector_v1.0 (by /u/threat_intel_bot)",
+            }
             # Bypass SSL verification for Windows environments with missing certs
-            resp = requests.get(self.feed_url, timeout=15, verify=False)
+            resp = requests.get(self.feed_url, timeout=15, verify=False,
+                                headers=headers)
             resp.raise_for_status()
             feed = feedparser.parse(resp.content)
         except Exception as e:
@@ -314,32 +338,42 @@ class RSSCollector(BaseCollector):
         if feed.bozo and not feed.entries:
             print(f"[!] RSS parse warning: {feed.bozo_exception}")
         return feed.entries
-        
-        # feed = feedparser.parse(self.feed_url)
-        # if feed.bozo:
-        #     print(f"[!] RSS parse warning: {feed.bozo_exception}")
-        # return feed.entries
 
     # ── Date helpers ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _entry_timestamp(date_str: str) -> float:
-        """Parse an RSS date string to a UTC Unix timestamp. Returns 0.0 on failure."""
+    def _parse_date(date_str: str) -> datetime | None:
+        """
+        Parse an RSS/Atom date string into a timezone-aware datetime.
+
+        Handles two formats:
+          - RFC-2822: 'Thu, 21 May 2026 00:00:00 +0000' (standard RSS)
+          - ISO-8601: '2026-01-26T01:29:14+00:00'        (Reddit Atom / many Atom feeds)
+
+        Returns None on failure so callers can fall back gracefully.
+        """
         if not date_str:
-            return 0.0
+            return None
+        # Try RFC-2822 first (most RSS feeds)
         try:
             from email.utils import parsedate_to_datetime
-            return parsedate_to_datetime(date_str).timestamp()
+            return parsedate_to_datetime(date_str)
         except Exception:
-            return 0.0
+            pass
+        # Fall back to ISO-8601 (Reddit Atom, other Atom feeds)
+        try:
+            return datetime.fromisoformat(date_str)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _entry_timestamp(date_str: str) -> float:
+        """Parse an RSS/Atom date string to a UTC Unix timestamp. Returns 0.0 on failure."""
+        dt = RSSCollector._parse_date(date_str)
+        return dt.timestamp() if dt else 0.0
 
     @staticmethod
     def _entry_year(date_str: str) -> int | None:
-        """Extract the year from an RSS date string. Returns None on failure."""
-        if not date_str:
-            return None
-        try:
-            from email.utils import parsedate_to_datetime
-            return parsedate_to_datetime(date_str).year
-        except Exception:
-            return None
+        """Extract the year from an RSS/Atom date string. Returns None on failure."""
+        dt = RSSCollector._parse_date(date_str)
+        return dt.year if dt else None

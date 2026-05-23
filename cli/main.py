@@ -9,14 +9,16 @@ from cli.formatter import print_header, print_status
 def cmd_collect(args):
     from collectors.nvd_collector  import NVDCollector
     from collectors.otx_collector  import OTXCollector
-    from collectors.rss_collector  import RSSCollector
+    from collectors.rss_collector  import RSSCollector, KNOWN_FEEDS
 
     collectors = {
         "nvd": NVDCollector(),
         "otx": OTXCollector(),
-        "rss": RSSCollector(),
+        "rss": RSSCollector(),  # defaults to Exploit-DB
+        "reddit": RSSCollector(feed_url=KNOWN_FEEDS["reddit_netsec"]),
+        "bleeping": RSSCollector(feed_url=KNOWN_FEEDS["bleeping_computer"]),
     }
-    targets = [args.source] if args.source != "all" else list(collectors.keys())
+    targets = [args.source] if args.source != "all" else ["nvd", "otx", "rss"]
     db = Path(DB_PATH)
 
     print_header("COLLECT")
@@ -105,7 +107,7 @@ def main():
     # ── collect ──────────────────────────────────────────────────
     p_col = sub.add_parser("collect", help="Fetch data from NVD / OTX / RSS")
     p_col.add_argument("--source", default="all",
-                       choices=["nvd", "otx", "rss", "all"])
+                       choices=["nvd", "otx", "rss", "reddit", "bleeping", "all"])
     p_col.add_argument("--days",   type=int, default=7,
                        help="Days back for time-based fetch")
     p_col.add_argument("--query",  type=str, default=None,
