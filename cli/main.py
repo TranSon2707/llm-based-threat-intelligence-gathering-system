@@ -57,7 +57,7 @@ def cmd_enrich(args):
 
 def cmd_report(args):
     print_header("GENERATE REPORTS")
-    from enrichment.report_generator import generate_analyst_summary
+    from reports.report_generator import generate_analyst_summary
     from db.db                       import get_db_connection
     from db.queries                  import insert_report
 
