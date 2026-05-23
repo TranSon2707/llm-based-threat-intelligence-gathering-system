@@ -1,0 +1,33 @@
+[
+  {
+    "source": "otx",
+    "title": "Volt Typhoon Campaign: CVE-2026-10023 Exploitation for BlackBasta Deployment",
+    "description": "Recent telemetry indicates active exploitation of CVE-2026-10023, an OGNL injection vulnerability in Atlassian Confluence Data Center and Server (versions 8.0.0 through 8.5.3). Unauthenticated actors can achieve Remote Code Execution (RCE). Evidence links these attacks to the threat actor Volt Typhoon, utilizing the vulnerability for initial access to deploy BlackBasta ransomware. Identified command and control (C2) communications trace to 192.168.105.42 and confluence-updates.net.",
+    "url": "https://otx.alienvault.com/pulse/65a4f3b...",
+    "published_date": "2026-05-23T14:30:00Z",
+    "collected_at": "2026-05-23T22:45:00Z",
+    "dedup_key": "a4b7f8c92e10d...",
+    "raw": {
+      "pulse_id": "65a4f3b8910...",
+      "author": "AlienVault",
+      "indicators": [
+        {
+          "type": "IPv4",
+          "indicator": "192.168.105.42",
+          "description": "C2 Server"
+        },
+        {
+          "type": "domain",
+          "indicator": "confluence-updates.net",
+          "description": "Payload staging"
+        },
+        {
+          "type": "FileHash-SHA256",
+          "indicator": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "description": "BlackBasta ransomware payload"
+        }
+      ],
+      "tags": ["Ransomware", "Volt Typhoon", "Confluence", "BlackBasta", "CVE-2026-10023"]
+    }
+  }
+]
