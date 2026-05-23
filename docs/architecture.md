@@ -356,7 +356,7 @@ We introduces Neo4j alongside SQLite using the **Strangler Fig pattern**
 | `ThreatActor` | `name`, `aliases`, `origin` | APT group or individual attacker |
 | `Indicator` | `type`, `value`, `confidence` | IP, domain, hash IOC |
 | `TTP` | `technique_id`, `name`, `tactic` | MITRE ATT&CK technique |
-| `Report` | `source_id`, `source`, `published_date`, `title` | Raw intelligence item |
+| `System` | `name`, `version`, `vendor` | Affected software or hardware asset (e.g., Apache, Windows 10) |
 
 ### Edge Types (Relationships)
 
@@ -366,11 +366,10 @@ We introduces Neo4j alongside SQLite using the **Strangler Fig pattern**
 | `USES` | `ThreatActor -> Malware` | `confidence`, `campaign` | Threat actor deploys this malware |
 | `USES` | `ThreatActor -> TTP` | `confidence` | Actor uses this ATT&CK technique |
 | `COMMUNICATES_WITH` | `Malware -> Indicator` | `protocol`, `port` | Malware C2 or exfiltration endpoint |
-| `MENTIONS` | `Report -> Vulnerability` | `source_id` | Report references this CVE |
-| `MENTIONS` | `Report -> Malware` | `source_id` | Report references this malware |
-| `MENTIONS` | `Report -> ThreatActor` | `source_id` | Report references this actor |
-| `MENTIONS` | `Report -> Indicator` | `source_id` | Report contains this IOC |
-| `MAPS_TO` | `Report -> TTP` | `confidence`, `justification` | ATT&CK mapper linked this TTP |
+| `AFFECTS` | `Vulnerability -> System` | `confidence` | Vulnerability is present in this system |
+| `TARGETS` | `ThreatActor -> System` | `confidence` | Actor is known to target this system/software |
+| `MENTIONS` | `Indicator -> System` | `confidence` | Indicator is associated with attacks on this system |
+| `MAPS_TO` | `Malware -> TTP` | `confidence`, `justification` | Malware uses this specific TTP |
 
 ### Example Cypher - Campaign Correlation Query
 
@@ -384,10 +383,9 @@ ORDER BY v.cvss_score DESC
 ```
 
 ```cypher
--- Find all IOCs associated with WannaCry across all reports
-MATCH (m:Malware {name: "WannaCry"})<-[:MENTIONS]-(r:Report)-[:MENTIONS]->(i:Indicator)
-RETURN i.type, i.value, r.title, r.published_date
-ORDER BY r.published_date DESC
+-- Find all systems affected by a specific Malware via its exploited CVEs
+MATCH (m:Malware {name: "WannaCry"})-[:EXPLOITS]->(v:Vulnerability)-[:AFFECTS]->(s:System)
+RETURN s.name, s.version, v.cve_id
 ```
 
 ### MERGE Strategy (Deduplication at Graph Level)
