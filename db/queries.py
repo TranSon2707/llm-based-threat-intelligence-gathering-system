@@ -93,7 +93,7 @@ LINK_MITRE_SOFTWARE = """
 
 # Complex Traversal finding direct affects, and multi-hop technique targets
 VECTOR_SEARCH_AND_TRAVERSE = """
-    CALL db.index.vector.queryNodes('threat_embeddings_index', 30, $post_vector)
+    CALL db.index.vector.queryNodes('threat_embeddings_index', $top_k, $post_vector)
     YIELD node AS matched_threat, score
     WHERE score >= $threshold
     

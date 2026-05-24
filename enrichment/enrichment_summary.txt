@@ -115,25 +115,30 @@ def extract_entities(text: str) -> list[ExtractedEntity]:
             seen.add(key)
             results.append(ExtractedEntity(entity_type=etype, entity_value=evalue))
 
-    # Hashes first so long hex strings are claimed before domain regex runs
+    # Hashes first so long hex strings are claimed before domain regex runs.
+    # Track captured spans to prevent shorter patterns re-matching inside a
+    # longer hash that was already captured (e.g. MD5 re-matching inside SHA256).
+    captured_spans: set[tuple[int, int]] = set()
+
+    def _span_is_free(m: re.Match) -> bool:
+        """Return True if this match does not overlap any already-captured span."""
+        s, e = m.start(), m.end()
+        return not any(s < ce and e > cs for cs, ce in captured_spans)
+
     for match in _RE_SHA256.finditer(text):
-        _add("SHA256", match.group())
+        if _span_is_free(match):
+            captured_spans.add((match.start(), match.end()))
+            _add("SHA256", match.group())
 
     for match in _RE_SHA1.finditer(text):
-        val = match.group()
-        # Skip if already captured as part of a SHA-256
-        if not any(val in e.entity_value for e in results if e.entity_type == "SHA256"):
-            _add("SHA1", val)
+        if _span_is_free(match):
+            captured_spans.add((match.start(), match.end()))
+            _add("SHA1", match.group())
 
     for match in _RE_MD5.finditer(text):
-        val = match.group()
-        already_longer = any(
-            val in e.entity_value
-            for e in results
-            if e.entity_type in ("SHA1", "SHA256")
-        )
-        if not already_longer:
-            _add("MD5", val)
+        if _span_is_free(match):
+            captured_spans.add((match.start(), match.end()))
+            _add("MD5", match.group())
 
     # CVEs
     for match in _RE_CVE.finditer(text):
@@ -379,13 +384,14 @@ def extract_ner_entities(text: str) -> list[NEREntity]:
             continue
 
         if raw_label == "PERSON":
-            # --- FILTER FALSE POSITIVES ---
-            # Take the token immediately preceding the PERSON entity (if any) to check for safe titles
-            prev_token = doc[ent.start - 1].text.lower() if ent.start > 0 else ""
-            
-            # If the previous token is a common safe title, skip this entity to reduce false positives
-            if prev_token in SAFE_TITLES:
-                continue
+            # Check the 3 tokens before the entity, stripping punctuation, to catch
+            # "Dr. Jane", "Senior Researcher John", etc.
+            preceding = [
+                doc[i].text.lower().strip(".")
+                for i in range(max(0, ent.start - 3), ent.start)
+            ]
+            if any(tok in SAFE_TITLES for tok in preceding):
+                continue  # skip this PERSON entity as it's likely a safe title, not a threat actor
             
             etype = "THREAT_ACTOR"
         elif raw_label == "MALWARE":
@@ -514,9 +520,10 @@ class KnowledgeEngine:
         matched_threats = []
         explicit_techniques = set()
         blast_radius = set()
+        unmatched_behaviors = []
         
         if not behaviors:
-            return {"matched_threats": [], "techniques": [], "systems_at_risk": [], "is_zero_day": zero_day_flag}
+            return {"matched_threats": [], "techniques": [], "systems_at_risk": [], "is_zero_day": zero_day_flag, "unmatched_behaviors": unmatched_behaviors}
 
         logger.info(f"[*] Querying Neo4j for {len(behaviors)} behaviors (Threshold >= 80%)...")
         
@@ -542,12 +549,16 @@ class KnowledgeEngine:
                     systems = record.get("systems_at_risk", [])
                     for sys in systems:
                         if sys: blast_radius.add(sys)
+
+            else:
+                unmatched_behaviors.append(sentence)
                         
         payload = {
             "matched_threats": matched_threats,
             "techniques": list(explicit_techniques),
             "systems_at_risk": list(blast_radius),
-            "is_zero_day": zero_day_flag
+            "is_zero_day": zero_day_flag,
+            "unmatched_behaviors": unmatched_behaviors,
         }
         
         logger.info(f"[+] Evaluation Complete. Zero-Day: {zero_day_flag}. Matches: {len(matched_threats)}. Systems at risk: {len(blast_radius)}")

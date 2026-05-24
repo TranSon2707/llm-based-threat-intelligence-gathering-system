@@ -110,26 +110,31 @@ def extract_entities(text: str) -> list[ExtractedEntity]:
             seen.add(key)
             results.append(ExtractedEntity(entity_type=etype, entity_value=evalue))
 
-    # Hashes first so long hex strings are claimed before domain regex runs
+    # Hashes first so long hex strings are claimed before domain regex runs.
+    # Track captured spans to prevent shorter patterns re-matching inside a
+    # longer hash that was already captured (e.g. MD5 re-matching inside SHA256).
+    captured_spans: set[tuple[int, int]] = set()
+
+    def _span_is_free(m: re.Match) -> bool:
+        """Return True if this match does not overlap any already-captured span."""
+        s, e = m.start(), m.end()
+        return not any(s < ce and e > cs for cs, ce in captured_spans)
+
     for match in _RE_SHA256.finditer(text):
-        _add("SHA256", match.group())
+        if _span_is_free(match):
+            captured_spans.add((match.start(), match.end()))
+            _add("SHA256", match.group())
 
     for match in _RE_SHA1.finditer(text):
-        val = match.group()
-        # Skip if already captured as part of a SHA-256
-        if not any(val in e.entity_value for e in results if e.entity_type == "SHA256"):
-            _add("SHA1", val)
+        if _span_is_free(match):
+            captured_spans.add((match.start(), match.end()))
+            _add("SHA1", match.group())
 
     for match in _RE_MD5.finditer(text):
-        val = match.group()
-        already_longer = any(
-            val in e.entity_value
-            for e in results
-            if e.entity_type in ("SHA1", "SHA256")
-        )
-        if not already_longer:
-            _add("MD5", val)
-
+        if _span_is_free(match):
+            captured_spans.add((match.start(), match.end()))
+            _add("MD5", match.group())
+            
     # CVEs
     for match in _RE_CVE.finditer(text):
         _add("CVE", match.group().upper())

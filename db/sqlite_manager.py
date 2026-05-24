@@ -46,10 +46,17 @@ def init_db():
     logger.info("SQLite database initialized successfully.")
 
 def insert_raw_item(data: tuple) -> int:
-    """Inserts a scraped OSINT post. Returns the primary key ID."""
+    """Inserts a scraped OSINT post. Returns the primary key ID (existing row if duplicate)."""
     with get_db_connection() as conn:
         cursor = conn.execute(INSERT_RAW_ITEM, data)
-        return cursor.lastrowid
+        if cursor.lastrowid:
+            return cursor.lastrowid
+        # INSERT OR IGNORE skipped a duplicate — fetch the existing row's ID - the row that has the same dedup_key
+        cursor2 = conn.execute(
+            "SELECT id FROM raw_items WHERE dedup_key = ?", (data[-1],)
+        )
+        row = cursor2.fetchone()
+        return row["id"] if row else 0
 
 def get_unprocessed_batch(limit: int = 10) -> list:
     """Fetches raw records for the preprocessing pipeline to sanitize."""

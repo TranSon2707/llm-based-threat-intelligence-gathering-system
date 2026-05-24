@@ -33,6 +33,6 @@ CREATE TABLE IF NOT EXISTS reports (
     summary TEXT,                       -- LLM generated executive summary
     status TEXT DEFAULT 'pending',      -- HITL status: 'pending', 'approved', 'rejected'
     created_at TEXT NOT NULL,           -- UTC timestamp of report generation
-    UNIQUE(source_id)
+    UNIQUE(source_id),
     FOREIGN KEY (source_id) REFERENCES raw_items(id) ON DELETE CASCADE
 );

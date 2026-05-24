@@ -53,6 +53,11 @@ def run_preprocessing_batch(batch_size: int = 10) -> list:
             secured_string = encapsulate_threat_data(item['description'])
             
             item['processed_text'] = secured_string
+            # Sanity-check: downstream enrichment must use processed_text, not description
+            assert item['processed_text'].startswith("<THREAT_DATA>"), (
+                f"Encapsulation failed for item ID {item['id']} — "
+                "pass item['processed_text'] to the enrichment layer, not item['description']"
+            )
             processed_items.append(item)
             
             mark_processed(item['id'])

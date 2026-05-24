@@ -21,9 +21,10 @@ class KnowledgeEngine:
         matched_threats = []
         explicit_techniques = set()
         blast_radius = set()
+        unmatched_behaviors = []
         
         if not behaviors:
-            return {"matched_threats": [], "techniques": [], "systems_at_risk": [], "is_zero_day": zero_day_flag}
+            return {"matched_threats": [], "techniques": [], "systems_at_risk": [], "is_zero_day": zero_day_flag, "unmatched_behaviors": unmatched_behaviors}
 
         logger.info(f"[*] Querying Neo4j for {len(behaviors)} behaviors (Threshold >= 80%)...")
         
@@ -49,12 +50,16 @@ class KnowledgeEngine:
                     systems = record.get("systems_at_risk", [])
                     for sys in systems:
                         if sys: blast_radius.add(sys)
+
+            else:
+                unmatched_behaviors.append(sentence)
                         
         payload = {
             "matched_threats": matched_threats,
             "techniques": list(explicit_techniques),
             "systems_at_risk": list(blast_radius),
-            "is_zero_day": zero_day_flag
+            "is_zero_day": zero_day_flag,
+            "unmatched_behaviors": unmatched_behaviors,
         }
         
         logger.info(f"[+] Evaluation Complete. Zero-Day: {zero_day_flag}. Matches: {len(matched_threats)}. Systems at risk: {len(blast_radius)}")

@@ -92,14 +92,14 @@ class GraphConnector:
     # Active Enrichment (Read Operations)
     # ---------------------------------------------------------
     
-    def vector_search(self, post_vector: list, threshold: float = 0.80) -> list:
+    def vector_search(self, post_vector: list, threshold: float = 0.80, top_k: int = 15) -> list:
         """
-        Executes a vector similarity search comparing an OSINT post to known threats.
-        Traverses the graph to find affected software. 
-        Requires an 80% similarity threshold to avoid false positives.
+        top_k controls how many candidates are retrieved before threshold filtering.
+        Default 15 gives the threshold room to work without over-fetching.
         """
         return self._execute_read(
-            VECTOR_SEARCH_AND_TRAVERSE, 
-            post_vector=post_vector, 
-            threshold=threshold
+            VECTOR_SEARCH_AND_TRAVERSE,
+            post_vector=post_vector,
+            threshold=threshold,
+            top_k=top_k,
         )

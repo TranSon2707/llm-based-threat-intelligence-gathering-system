@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS reports (
     summary TEXT,                       -- LLM generated executive summary
     status TEXT DEFAULT 'pending',      -- HITL status: 'pending', 'approved', 'rejected'
     created_at TEXT NOT NULL,           -- UTC timestamp of report generation
-    UNIQUE(source_id)
+    UNIQUE(source_id),
     FOREIGN KEY (source_id) REFERENCES raw_items(id) ON DELETE CASCADE
 );
 _________________________
@@ -140,7 +140,7 @@ LINK_MITRE_SOFTWARE = """
 
 # Complex Traversal finding direct affects, and multi-hop technique targets
 VECTOR_SEARCH_AND_TRAVERSE = """
-    CALL db.index.vector.queryNodes('threat_embeddings_index', 3, $post_vector)
+    CALL db.index.vector.queryNodes('threat_embeddings_index', $top_k, $post_vector)
     YIELD node AS matched_threat, score
     WHERE score >= $threshold
     
@@ -212,10 +212,17 @@ def init_db():
     logger.info("SQLite database initialized successfully.")
 
 def insert_raw_item(data: tuple) -> int:
-    """Inserts a scraped OSINT post. Returns the primary key ID."""
+    """Inserts a scraped OSINT post. Returns the primary key ID (existing row if duplicate)."""
     with get_db_connection() as conn:
         cursor = conn.execute(INSERT_RAW_ITEM, data)
-        return cursor.lastrowid
+        if cursor.lastrowid:
+            return cursor.lastrowid
+        # INSERT OR IGNORE skipped a duplicate — fetch the existing row's ID - the row that has the same dedup_key
+        cursor2 = conn.execute(
+            "SELECT id FROM raw_items WHERE dedup_key = ?", (data[-1],)
+        )
+        row = cursor2.fetchone()
+        return row["id"] if row else 0
 
 def get_unprocessed_batch(limit: int = 10) -> list:
     """Fetches raw records for the preprocessing pipeline to sanitize."""
@@ -348,14 +355,14 @@ class GraphConnector:
     # Active Enrichment (Read Operations)
     # ---------------------------------------------------------
     
-    def vector_search(self, post_vector: list, threshold: float = 0.80) -> list:
+    def vector_search(self, post_vector: list, threshold: float = 0.80, top_k: int = 15) -> list:
         """
-        Executes a vector similarity search comparing an OSINT post to known threats.
-        Traverses the graph to find affected software. 
-        Requires an 80% similarity threshold to avoid false positives.
+        top_k controls how many candidates are retrieved before threshold filtering.
+        Default 15 gives the threshold room to work without over-fetching.
         """
         return self._execute_read(
-            VECTOR_SEARCH_AND_TRAVERSE, 
-            post_vector=post_vector, 
-            threshold=threshold
+            VECTOR_SEARCH_AND_TRAVERSE,
+            post_vector=post_vector,
+            threshold=threshold,
+            top_k=top_k,
         )

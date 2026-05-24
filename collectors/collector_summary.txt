@@ -42,7 +42,7 @@ from typing import Any
 from sentence_transformers import SentenceTransformer
 from collectors.nvd_collector import NVDCollector
 from db.neo4j_manager import GraphConnector
-from sync_nvd_baseline import fetch_ctid_mapping
+from collectors.sync_nvd_baseline import fetch_ctid_mapping
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
