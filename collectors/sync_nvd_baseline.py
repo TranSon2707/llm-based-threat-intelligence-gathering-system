@@ -39,15 +39,21 @@ USAGE:
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import logging
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from db.neo4j_manager import GraphConnector
 from collectors.nvd_collector import NVDCollector
+
+# Load .env so NVD_API_KEY is available to NVDCollector
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -56,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 CTID_MAPPING_URL = (
     "https://raw.githubusercontent.com/center-for-threat-informed-defense/"
-    "attack_to_cve/main/data/attack-to-cve.json"
+    "attack_to_cve/master/Att%26ckToCveMappings.csv"
 )
 
 START_YEAR = 1999
@@ -120,31 +126,47 @@ def _print_state_summary(state: dict) -> None:
 
 def fetch_ctid_mapping() -> dict[str, list[str]]:
     """
-    Downloads the CTID CVE->ATT&CK mapping JSON and returns:
+    Downloads the CTID CVE->ATT&CK mapping CSV and returns:
         { "CVE-2021-44228": ["T1190", "T1059"], ... }
 
-    CTID JSON is a list of objects each with "technique_id" and "cve_id".
-    We invert it into a CVE-keyed dict for O(1) lookup inside the year loop.
+    The CSV columns are:
+        CVE ID | Primary Impact | Secondary Impact | Exploitation Technique | Uncategorized | Phase
+    We collect all non-empty technique columns for each CVE row.
     """
-    logger.info(f"[*] Fetching CTID CVE->ATT&CK mapping...")
+    logger.info("[*] Fetching CTID CVE->ATT&CK mapping (CSV)...")
     response = requests.get(CTID_MAPPING_URL, timeout=30)
     response.raise_for_status()
-    raw_data = response.json()
 
     cve_to_ttps: dict[str, list[str]] = {}
 
-    for entry in raw_data:
-        technique_id = entry.get("technique_id", "").strip().upper()
-        cve_id       = entry.get("cve_id", "").strip().upper()
+    # Parse CSV from response text
+    reader = csv.DictReader(io.StringIO(response.text))
 
-        if not technique_id or not cve_id:
+    # Technique columns to check — covers all mapping types in the CSV
+    technique_columns = [
+        "Primary Impact",
+        "Secondary Impact",
+        "Exploitation Technique",
+        "Uncategorized",
+    ]
+
+    for row in reader:
+        cve_id = row.get("CVE ID", "").strip().upper()
+        if not cve_id or not cve_id.startswith("CVE-"):
             continue
 
-        if cve_id not in cve_to_ttps:
-            cve_to_ttps[cve_id] = []
+        ttps = []
+        for col in technique_columns:
+            val = row.get(col, "").strip().upper()
+            if val and val.startswith("T") and val not in ttps:
+                ttps.append(val)
 
-        if technique_id not in cve_to_ttps[cve_id]:
-            cve_to_ttps[cve_id].append(technique_id)
+        if ttps:
+            if cve_id not in cve_to_ttps:
+                cve_to_ttps[cve_id] = []
+            for ttp in ttps:
+                if ttp not in cve_to_ttps[cve_id]:
+                    cve_to_ttps[cve_id].append(ttp)
 
     logger.info(f"[+] CTID mapping loaded: {len(cve_to_ttps)} CVEs have ATT&CK mappings.")
     return cve_to_ttps
