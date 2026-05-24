@@ -1,169 +1,251 @@
+"""
+FILE: collectors/backfiller.py
+ROLE: Periodic Baseline Updater
+PURPOSE:
+  Keeps the Neo4j Knowledge Graph fresh after the initial baseline sync.
+  Runs two tasks on a schedule (e.g. weekly cron job):
+
+  Task 1 — NVD Sliding Window Sync:
+    Fetches CVEs published or modified in the last N days from NVD,
+    embeds their descriptions, and merges them into the graph.
+    Also applies CTID CVE->ATT&CK mappings to any newly added CVEs.
+
+  Task 2 — MITRE ATT&CK Re-Sync:
+    Re-downloads the MITRE STIX feed and merges any new or updated
+    techniques into the graph. New TTP nodes automatically get picked
+    up by the existing vector index.
+
+  Uses sync_state.json to checkpoint progress so it is safe to interrupt
+  and resume without losing work or making duplicate API calls.
+
+RELATIONSHIP TO BASELINE SCRIPTS:
+  sync_mitre_baseline.py  — run ONCE to build the initial MITRE graph
+  sync_nvd_baseline.py    — run ONCE to build the initial CVE graph
+  backfiller.py           — run PERIODICALLY to keep both sides updated
+"""
+
 from __future__ import annotations
 
-import os
 import json
 import time
-from datetime import datetime, timedelta, timezone
+import logging
+import requests
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sentence_transformers import SentenceTransformer
 from collectors.nvd_collector import NVDCollector
-from db.graph_connector import GraphConnector
+from db.neo4j_manager import GraphConnector
+from sync_nvd_baseline import fetch_ctid_mapping
 
-# In a real run, you would import the embedding service here
-# from enrichment.embedding_service import EmbeddingService
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
 
-class BaselineSyncManager:
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+MITRE_STIX_URL = (
+    "https://raw.githubusercontent.com/mitre/cti/master/"
+    "enterprise-attack/enterprise-attack.json"
+)
+
+STATE_FILE = Path("data/sync_state.json")
+
+
+# ── State Management ──────────────────────────────────────────────────────────
+
+def _load_state() -> dict[str, Any]:
+    """Loads the sync checkpoint state from disk."""
+    if STATE_FILE.exists():
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            logger.warning("[!] sync_state.json corrupted. Initializing fresh state.")
+
+    return {
+        "last_nvd_sync":   None,   # ISO timestamp of last NVD sliding window sync
+        "last_mitre_sync": None,   # ISO timestamp of last MITRE re-sync
+    }
+
+
+def _save_state(state: dict[str, Any]) -> None:
+    """Commits the current checkpoint state to disk."""
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=4)
+
+
+# ── Task 1: NVD Sliding Window Sync ──────────────────────────────────────────
+
+def run_nvd_sync(days_back: int = 30) -> None:
     """
-    Manages asynchronous temporal backfilling of NVD baseline data.
-    Uses sync_state.json to checkpoint progress, preventing data loss 
-    or redundant API calls upon script restart.
+    Fetches CVEs published or modified in the last `days_back` days from NVD.
+    Embeds each CVE description and merges it into the Neo4j graph.
+    Applies CTID CVE->ATT&CK mappings to build EXPLOITS_TECHNIQUE edges
+    for any newly added CVEs that appear in the CTID dataset.
+
+    Safe to run repeatedly — MERGE in Neo4j is idempotent.
     """
+    logger.info(f"\n[*] Starting NVD {days_back}-day sliding window sync...")
 
-    STATE_FILE = Path("data/sync_state.json")
-    EARLIEST_YEAR = 1999
+    model     = SentenceTransformer('all-MiniLM-L6-v2')
+    graph     = GraphConnector()
+    collector = NVDCollector()
 
-    def __init__(self):
-        self.nvd = NVDCollector()
-        self.graph_db = GraphConnector()
-        # self.embedder = EmbeddingService()
-        
-        # Ensure data directory exists
-        self.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        self.state = self._load_state()
+    # Fetch CTID mapping so we can wire up any new CVE->TTP edges
+    cve_to_ttps = fetch_ctid_mapping()
 
-    def _load_state(self) -> dict[str, Any]:
-        """Loads the backfill checkpoint state from disk."""
-        if self.STATE_FILE.exists():
-            try:
-                with open(self.STATE_FILE, "r") as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                print("[!] sync_state.json corrupted. Initializing fresh state.")
-        
-        # Default state if file doesn't exist
-        return {
-            "nvd_backfill": {
-                "target_year": datetime.now(timezone.utc).year,
-                "completed_years": [],
-                "status": "pending" # pending | in_progress | complete
-            },
-            "last_daily_sync": None
-        }
+    records = collector.fetch_by_time(days_back=days_back, max_results=5000)
+    logger.info(f"[-] Fetched {len(records)} CVE records from NVD.")
 
-    def _save_state(self) -> None:
-        """Commits the current state to disk."""
-        with open(self.STATE_FILE, "w") as f:
-            json.dump(self.state, f, indent=4)
+    count = 0
+    for record in records:
+        try:
+            cve_id      = record["title"]
+            description = record["description"]
+            cvss_score  = record.get("raw", {}).get("cvss_score")
 
-    # ── Task 1: Daily Sliding Window Sync ─────────────────────────────────────
+            # 1. Embed and merge CVE node
+            embedding = model.encode(description).tolist()
+            graph.merge_cve(
+                cve_id=cve_id,
+                description=description,
+                cvss_score=cvss_score,
+                embedding=embedding,
+            )
 
-    def run_sync(self) -> tuple[list[dict], str]:
-        """
-        Executes a 30-day sliding window sync. Used for daily cron jobs 
-        to keep the graph updated with newly published or modified CVEs.
-        """
-        print("\n[*] Starting Daily 30-Day NVD Sync...")
-        
-        # Fetch the last 30 days of data
-        records = self.nvd.fetch_by_time(days_back=30, max_results=5000)
-        
-        inserted_count = 0
-        for record in records:
-            # 1. Generate 768-dim Vector Embedding for GraphRAG
-            # vector = self.embedder.generate_embedding(record["description"])
-            
-            # 2. Inject into Neo4j Graph
-            # Note: In production, you would extract entities first. 
-            # For baseline CVEs, the entity is the CVE itself.
-            mock_entities = {"CVE": [record["title"]], "Indicators": [], "ThreatActor": []}
-            self.graph_db.insert_threat_intel(record, mock_entities)
-            inserted_count += 1
+            # 2. Rebuild AFFECTS edges for affected software
+            affected_software = record.get("raw", {}).get("affected_software", [])
+            for software_name in affected_software:
+                if software_name:
+                    graph.link_cve_software(
+                        cve_id=cve_id,
+                        software_name=software_name.strip().lower(),
+                    )
 
-        self.state["last_daily_sync"] = datetime.now(timezone.utc).isoformat()
-        self._save_state()
-        
-        msg = f"Daily sync complete. Processed {inserted_count} records."
-        print(f"[+] {msg}")
-        return records, msg
+            # 3. Apply CTID mapping for CVE->MITRE edges
+            ttps = cve_to_ttps.get(cve_id.upper(), [])
+            for ttp_id in ttps:
+                graph.link_cve_mitre(cve_id=cve_id, ttp_id=ttp_id)
 
-    # ── Task 2: Historical Year-by-Year Backfill ──────────────────────────────
+            count += 1
 
-    def run_backfill(self) -> None:
-        """
-        Long-running worker that backfills CVEs year-by-year down to 1999.
-        Safe to interrupt (Ctrl+C); state is saved after every successful chunk.
-        """
-        backfill_state = self.state["nvd_backfill"]
-        
-        if backfill_state["status"] == "complete":
-            print("[*] NVD Historical Backfill is already complete.")
-            return
+        except Exception as e:
+            logger.warning(f"[!] Failed to process CVE {record.get('title')}: {e}")
+            continue
 
-        backfill_state["status"] = "in_progress"
-        self._save_state()
+    graph.close()
+    logger.info(f"[+] NVD sync complete. {count} CVE nodes merged.")
 
-        current_year = backfill_state["target_year"]
-        
-        print(f"\n[*] Starting NVD Historical Backfill (Targeting {current_year} -> {self.EARLIEST_YEAR})")
 
-        while current_year >= self.EARLIEST_YEAR:
-            if current_year in backfill_state["completed_years"]:
-                current_year -= 1
-                continue
+# ── Task 2: MITRE ATT&CK Re-Sync ─────────────────────────────────────────────
 
-            print(f"\n[-] Fetching baseline data for year: {current_year}")
-            
-            try:
-                # NVD limits date ranges to 120 days per request. 
-                # The NVDCollector.fetch_by_time handles this, but here we process the whole year.
-                records = self.nvd.fetch_by_time(year=current_year, max_results=10000)
-                
-                print(f"[-] Processing {len(records)} CVEs for {current_year} into Knowledge Graph...")
-                for record in records:
-                    # Phase 2 GraphRAG Flow: 
-                    # 1. Embed text
-                    # 2. Extract Entities
-                    # 3. MERGE to Neo4j
-                    mock_entities = {"CVE": [record["title"]], "Indicators": [], "ThreatActor": []}
-                    self.graph_db.insert_threat_intel(record, mock_entities)
-                
-                # Checkpoint Success
-                backfill_state["completed_years"].append(current_year)
-                backfill_state["target_year"] = current_year - 1
-                self._save_state()
-                print(f"[+] Year {current_year} safely checkpointed.")
+def run_mitre_sync() -> None:
+    """
+    Re-downloads the full MITRE ATT&CK STIX feed and merges any new or
+    updated techniques into the Neo4j graph.
 
-                # Safety sleep to prevent aggressive rate limiting bans from NIST
-                print("[-] Sleeping for 10 seconds before next year chunk...")
-                time.sleep(10)
+    New TTP nodes get embedded and are immediately searchable via the
+    existing vector index — no index rebuild required.
+    Existing nodes are updated in-place via MERGE + SET.
+    """
+    logger.info("\n[*] Starting MITRE ATT&CK re-sync...")
 
-            except Exception as e:
-                print(f"[!] Backfill interrupted during {current_year}: {e}")
-                print("[!] Saving state and exiting gracefully. Run script again to resume.")
-                break
-                
-            current_year -= 1
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    graph = GraphConnector()
 
-        # Check if we finished the entire historical run
-        if backfill_state["target_year"] < self.EARLIEST_YEAR:
-            backfill_state["status"] = "complete"
-            self._save_state()
-            print("\n[+] FULL HISTORICAL NVD BACKFILL COMPLETE (1999 - Present).")
+    logger.info(f"[-] Fetching MITRE STIX feed from {MITRE_STIX_URL}...")
+    response = requests.get(MITRE_STIX_URL, timeout=60)
+    response.raise_for_status()
+    stix_data = response.json()
+
+    objects = stix_data.get("objects", [])
+    count   = 0
+
+    for obj in objects:
+        if obj.get("type") != "attack-pattern":
+            continue
+
+        ext_refs = obj.get("external_references", [])
+        ttp_id   = next(
+            (ref["external_id"] for ref in ext_refs
+             if ref.get("source_name") == "mitre-attack"),
+            None,
+        )
+
+        if not ttp_id:
+            continue
+
+        name        = obj.get("name", "Unknown")
+        description = obj.get("description", "")
+
+        try:
+            # 1. Embed and merge TTP node (updates description + embedding if changed)
+            embedding = model.encode(description).tolist()
+            graph.merge_mitre_ttp(
+                ttp_id=ttp_id,
+                name=name,
+                description=description,
+                embedding=embedding,
+            )
+
+            # 2. Rebuild TARGETS edges for platforms
+            platforms = obj.get("x_mitre_platforms", [])
+            for platform in platforms:
+                graph.link_mitre_software(
+                    ttp_id=ttp_id,
+                    software_name=platform.strip().lower(),
+                )
+
+            count += 1
+
+        except Exception as e:
+            logger.warning(f"[!] Failed to process TTP {ttp_id}: {e}")
+            continue
+
+    graph.close()
+    logger.info(f"[+] MITRE re-sync complete. {count} TTP nodes merged.")
+
+
+# ── Main Entry Point ──────────────────────────────────────────────────────────
+
+def main() -> None:
+    state = _load_state()
+
+    print("\nBackfiller — Select Operation:")
+    print("1. NVD Sliding Window Sync (last 30 days)")
+    print("2. MITRE ATT&CK Re-Sync (full feed, updates existing nodes)")
+    print("3. Run Both")
+
+    choice = input("Enter choice (1/2/3): ").strip()
+
+    if choice == "1":
+        run_nvd_sync(days_back=30)
+        state["last_nvd_sync"] = datetime.now(timezone.utc).isoformat()
+
+    elif choice == "2":
+        run_mitre_sync()
+        state["last_mitre_sync"] = datetime.now(timezone.utc).isoformat()
+
+    elif choice == "3":
+        run_nvd_sync(days_back=30)
+        state["last_nvd_sync"] = datetime.now(timezone.utc).isoformat()
+
+        # Brief pause between the two network-heavy operations
+        logger.info("[-] Sleeping 5 seconds before MITRE sync...")
+        time.sleep(5)
+
+        run_mitre_sync()
+        state["last_mitre_sync"] = datetime.now(timezone.utc).isoformat()
+
+    else:
+        print("[!] Invalid choice. Exiting.")
+        return
+
+    _save_state(state)
+    logger.info(f"[+] State saved. Last NVD sync: {state['last_nvd_sync']} | Last MITRE sync: {state['last_mitre_sync']}")
 
 
 if __name__ == "__main__":
-    manager = BaselineSyncManager()
-    
-    # You can choose which operation to run here
-    print("Select Operation:")
-    print("1. Daily Sliding Window Sync (Last 30 Days)")
-    print("2. Full Historical Backfill (Year-by-Year to 1999)")
-    
-    choice = input("Enter choice (1/2): ")
-    if choice == "1":
-        manager.run_sync()
-    elif choice == "2":
-        manager.run_backfill()
-    else:
-        print("Invalid choice.")
+    main()

@@ -31,7 +31,7 @@ import re
 import logging
 from typing import NamedTuple
 
-from db.queries import insert_entity
+from db.sqlite_manager import insert_entity
 
 logger = logging.getLogger(__name__)
 

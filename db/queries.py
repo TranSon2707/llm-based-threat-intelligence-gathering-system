@@ -1,124 +1,115 @@
-import json
-import datetime
-from db.db import get_db_connection
+"""
+Centralized dictionary for all database queries.
+Contains both SQLite statements for OSINT tracking and Neo4j Cypher queries for the Knowledge Graph.
+"""
 
-# =====================================================================
-# MODULE 1: DATA COLLECTION 
-# =====================================================================
+# ---------------------------------------------------------
+# SQLite Queries (Relational Data)
+# ---------------------------------------------------------
 
-def insert_raw_item(data_dict: dict) -> int:
-    """
-    Inserts a newly scraped threat report into the raw_items table.
-    Returns the inserted row ID, or None if it's a duplicate.
-    """
-    sql = """
-        INSERT OR IGNORE INTO raw_items 
-        (source, title, description, source_url, published_date, collected_at, processed, raw, dedup_key)
-        VALUES (?,?,?,?,?,?,?,?,?)
-    """
-    # Convert 'raw' dictionary to a JSON string for SQLite storage
-    raw_str = json.dumps(data_dict.get('raw', {}))
+INSERT_RAW_ITEM = """
+    INSERT OR IGNORE INTO raw_items 
+    (source, title, description, source_url, published_date, collected_at, raw, dedup_key) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+"""
+
+# Used by pipeline.py to fetch uncleaned records
+GET_UNPROCESSED_BATCH = """
+    SELECT * FROM raw_items 
+    WHERE processed = 0 
+    LIMIT ?;
+"""
+
+# Updates the status of an item once HTML stripping and encapsulation are complete
+MARK_PROCESSED = """
+    UPDATE raw_items 
+    SET processed = 1 
+    WHERE id = ?;
+"""
+
+INSERT_ENTITY = """
+    INSERT OR IGNORE INTO entities 
+    (source_id, entity_type, entity_value) 
+    VALUES (?, ?, ?);
+"""
+
+# Retrieves extracted actors and malware to feed into the final report generation
+GET_ENTITIES_BY_SOURCE = """
+    SELECT * FROM entities 
+    WHERE source_id = ?;
+"""
+
+INSERT_REPORT = """
+    INSERT OR IGNORE INTO reports 
+    (source_id, summary, created_at) 
+    VALUES (?, ?, ?);
+"""
+
+GET_REPORT = """
+    SELECT * FROM reports 
+    WHERE source_id = ?;
+"""
+
+# ---------------------------------------------------------
+# Neo4j Cypher Queries (Semantic Graph)
+# ---------------------------------------------------------
+
+# Inserts official MITRE tactics/techniques along with their 384-dimensional vector embedding
+MERGE_MITRE_TTP = """
+    MERGE (t:MITRE_TTP {ttp_id: $ttp_id})
+    SET t.name = $name, 
+        t.description = $description, 
+        t.embedding = $embedding
+"""
+
+# Inserts official vulnerabilities along with their vector embedding
+MERGE_CVE = """
+    MERGE (c:CVE {cve_id: $cve_id})
+    SET c.description = $description, 
+        c.cvss_score = $cvss_score, 
+        c.embedding = $embedding
+"""
+
+# Connects vulnerabilities to the systems they put at risk
+LINK_CVE_SOFTWARE = """
+    MATCH (c:CVE {cve_id: $cve_id})
+    MERGE (s:Software {name: $software_name})
+    MERGE (c)-[:AFFECTS]->(s)
+"""
+
+# Connects CVEs to MITRE techniques based on LLM-inferred relationships (e.g., "CVE-2021-12345 exploits T1548")
+LINK_CVE_MITRE = """
+    MATCH (c:CVE {cve_id: $cve_id})
+    MATCH (t:MITRE_TTP {ttp_id: $ttp_id})
+    MERGE (c)-[:EXPLOITS_TECHNIQUE]->(t)
+"""
+
+# Link MITRE technique explicitly to targeted Software/Platforms
+LINK_MITRE_SOFTWARE = """
+    MATCH (t:MITRE_TTP {ttp_id: $ttp_id})
+    MERGE (s:Software {name: $software_name})
+    MERGE (t)-[:TARGETS]->(s)
+"""
+
+# Complex Traversal finding direct affects, and multi-hop technique targets
+VECTOR_SEARCH_AND_TRAVERSE = """
+    CALL db.index.vector.queryNodes('threat_embeddings_index', 3, $post_vector)
+    YIELD node AS matched_threat, score
+    WHERE score >= $threshold
     
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(sql, (
-            data_dict.get('source'),
-            data_dict.get('title'),
-            data_dict.get('description'),
-            data_dict.get('source_url'),
-            data_dict.get('published_date'),
-            data_dict.get('collected_at'),
-            data_dict.get('processed', 0),
-            raw_str, 
-            data_dict.get('dedup_key')
-        ))
-        return cursor.lastrowid
-
-# =====================================================================
-# MODULE 2: PREPROCESSING 
-# =====================================================================
-
-def get_unprocessed_batch(batch_size: int = 10) -> list:
-    """
-    Fetches a batch of raw_items that haven't been cleaned yet (processed=0).
-    Returns a list of dictionaries.
-    """
-    sql = "SELECT * FROM raw_items WHERE processed = 0 LIMIT?"
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(sql, (batch_size,))
-        # Convert sqlite3.Row objects into standard Python dictionaries
-        return [dict(row) for row in cursor.fetchall()]
-
-def mark_processed(item_id: int):
-    """
-    Flags a raw item as processed (=1) so it won't be picked up again.
-    """
-    sql = "UPDATE raw_items SET processed = 1 WHERE id =?"
-    with get_db_connection() as conn:
-        conn.execute(sql, (item_id,))
-
-# =====================================================================
-# MODULE 3: ENRICHMENT & LLM MAPPING 
-# =====================================================================
-
-def insert_entity(source_id: int, entity_type: str, entity_value: str):
-    """
-    Saves an extracted IOC (IP, Hash, CVE) to the entities table.
-    """
-    sql = "INSERT OR IGNORE INTO entities (source_id, entity_type, entity_value) VALUES (?,?,?)"
-    with get_db_connection() as conn:
-        conn.execute(sql, (source_id, entity_type, entity_value))
-
-def insert_ttp_mapping(source_id: int, ttp_id: str, technique_name: str):
-    """
-    Saves a MITRE ATT&CK TTP mapped by the LLM to the ttp_mappings table.
-    """
-    sql = "INSERT OR IGNORE INTO ttp_mappings (source_id, ttp_id, technique_name) VALUES (?,?,?)"
-    with get_db_connection() as conn:
-        conn.execute(sql, (source_id, ttp_id, technique_name))
-
-def insert_report(source_id: int, summary: str):
-    """
-    Saves the final LLM-generated analyst summary into the reports table.
-    Default status is 'pending' for the Human-In-The-Loop review.
-    """
-    sql = "INSERT OR IGNORE INTO reports (source_id, summary, status, created_at) VALUES (?,?, 'pending',?)"
-    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    // Hop 1: Direct CVE to Software
+    OPTIONAL MATCH (matched_threat)-[:AFFECTS]->(s1:Software)
     
-    with get_db_connection() as conn:
-        conn.execute(sql, (source_id, summary, created_at))
-
-# =====================================================================
-# MODULE 4: HUMAN-IN-THE-LOOP CLI 
-# =====================================================================
-
-def update_report_status(source_id: int, status: str):
-    """
-    Updates the report status based on analyst input ('approved', 'rejected').
-    """
-    sql = "UPDATE reports SET status =? WHERE source_id =?"
-    with get_db_connection() as conn:
-        conn.execute(sql, (status, source_id))
-
-def get_pending_reports() -> list:
-    """Fetch all reports with status='pending', joined with raw_items."""
-    sql = """
-        SELECT r.id as report_id, r.source_id, r.summary, r.created_at,
-               ri.title, ri.source
-        FROM reports r
-        JOIN raw_items ri ON r.source_id = ri.id
-        WHERE r.status = 'pending'
-    """
-    with get_db_connection() as conn:
-        return [dict(row) for row in conn.execute(sql).fetchall()]
-
-def get_entities_for_source(source_id: int) -> list:
-    sql = "SELECT entity_type, entity_value FROM entities WHERE source_id = ?"
-    with get_db_connection() as conn:
-        return [dict(row) for row in conn.execute(sql, (source_id,)).fetchall()]
-
-def get_ttps_for_source(source_id: int) -> list:
-    sql = "SELECT ttp_id, technique_name FROM ttp_mappings WHERE source_id = ?"
-    with get_db_connection() as conn:
-        return [dict(row) for row in conn.execute(sql, (source_id,)).fetchall()]
+    // Hop 2: CVE to MITRE to Software
+    OPTIONAL MATCH (matched_threat)-[:EXPLOITS_TECHNIQUE]->(t1:MITRE_TTP)-[:TARGETS]->(s2:Software)
+    
+    // Hop 3: If the matched threat IS a MITRE node directly targeting Software
+    OPTIONAL MATCH (matched_threat)-[:TARGETS]->(s3:Software)
+    
+    RETURN 
+        coalesce(matched_threat.cve_id, matched_threat.ttp_id) AS threat_id, 
+        labels(matched_threat)[0] AS threat_type,
+        score AS similarity_score, 
+        collect(DISTINCT s1.name) + collect(DISTINCT s2.name) + collect(DISTINCT s3.name) AS systems_at_risk,
+        collect(DISTINCT t1.ttp_id) AS explicit_ttps
+"""

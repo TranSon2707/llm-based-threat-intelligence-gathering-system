@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 # Load API Keys before initializing collectors
 load_dotenv() 
 
-from db.db import init_db, DB_PATH
+from db.sqlite_manager import init_db, DB_PATH
 from collectors.rss_collector import RSSCollector
 from collectors.nvd_collector import NVDCollector
 from collectors.otx_collector import OTXCollector
@@ -27,7 +27,7 @@ from collectors.otx_collector import OTXCollector
 from preprocessor.pipeline import run_preprocessing_batch
 from enrichment.entity_extractor import extract_and_store
 from enrichment.ner_spacy import extract_and_store_ner
-from enrichment.attack_mapper import map_ttps
+from docs.attack_mapper import map_ttps
 from reports.report_generator import generate_analyst_summary
 
 class TestEndToEndRealPipeline(unittest.TestCase):

@@ -32,7 +32,7 @@ import spacy
 from spacy.language import Language
 from spacy.pipeline import EntityRuler
 
-from db.queries import insert_entity
+from db.sqlite_manager import insert_entity
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,557 @@
+// summary all files in this module
+______________________
+______________________
+entity_extractor.py
+*******************
+"""
+enrichment/entity_extractor.py
+================================
+Regex-based extraction of hard technical indicators (IOCs) from cleaned
+threat-intelligence text.
+
+Extracted entity types
+-----------------------
+  CVE        CVE-YYYY-NNNNN identifiers
+  IPv4       Standard dotted-decimal addresses (e.g. 192.168.1.1)
+  IPv6       Full and compressed IPv6 addresses (e.g. 2001:db8::1)
+  DOMAIN     Hostnames / FQDNs (e.g. evil.example.com)
+  MD5        32 hex-char hashes
+  SHA1       40 hex-char hashes
+  SHA256     64 hex-char hashes
+
+All results are written to the `entities` table via db/queries.py.
+
+Usage
+----- 
+    from enrichment.entity_extractor import extract_and_store
+
+    # cleaned_text  : output of preprocessor/html_stripper.strip_html()
+    # source_id     : raw_items.id that produced this text
+    extract_and_store(source_id=42, cleaned_text="CVE-2021-44228 triggered by 192.0.2.1")
+"""
+
+from __future__ import annotations
+
+import re
+import logging
+from typing import NamedTuple
+
+from db.sqlite_manager import insert_entity
+
+logger = logging.getLogger(__name__)
+
+# ── Compiled regex patterns ────────────────────────────────────────────────────
+
+# CVE-YYYY-NNNNN  (year 1999-2099, 4+ digit sequence number)
+_RE_CVE = re.compile(
+    r"\bCVE-(?:19|20)\d{2}-\d{4,}\b",
+    re.IGNORECASE,
+)
+
+# IPv4: four octets 0-255, word-boundary anchored
+_RE_IPV4 = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}"
+    r"(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b",
+)
+
+# IPv6: simplified pattern covering full, compressed, and mixed notations
+_RE_IPV6 = re.compile(
+    r"\b(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}\b"          # full
+    r"|\b(?:[0-9A-Fa-f]{1,4}:){1,7}:\b"                         # trailing ::
+    r"|\b::(?:[0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4}\b"      # leading ::
+    r"|\b(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}\b"        # middle ::
+    r"|\b(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}\b"
+    r"|\b(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}\b"
+    r"|\b(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}\b"
+    r"|\b(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}\b"
+    r"|\b[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}\b",
+)
+
+# DOMAIN: hostname.tld or sub.hostname.tld
+# Excludes pure numbers (already caught by IPv4), requires a known-style TLD.
+_RE_DOMAIN = re.compile(
+    r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)"
+    r"+[a-zA-Z]{2,}\b",
+)
+
+# Cryptographic hashes — distinguished by length, all hex characters
+_RE_MD5    = re.compile(r"\b[0-9A-Fa-f]{32}\b")
+_RE_SHA1   = re.compile(r"\b[0-9A-Fa-f]{40}\b")
+_RE_SHA256 = re.compile(r"\b[0-9A-Fa-f]{64}\b")
+
+# ── False-positive suppression ─────────────────────────────────────────────────
+
+# Common tokens that match the domain regex but are not IOCs
+_DOMAIN_STOPWORDS: frozenset[str] = frozenset({
+    "example.com", "localhost.localdomain", "test.local",
+    "schema.org", "w3.org", "xmlns.com",
+})
+
+
+# ── Public interface ───────────────────────────────────────────────────────────
+
+class ExtractedEntity(NamedTuple):
+    entity_type:  str
+    entity_value: str
+
+
+def extract_entities(text: str) -> list[ExtractedEntity]:
+    """
+    Run all regex patterns over *text* and return a deduplicated list of
+    ``ExtractedEntity`` named tuples.
+
+    Deduplication is (type, value) so the same IP appearing twice in one
+    report is stored only once.
+    """
+    if not text or not isinstance(text, str):
+        return []
+
+    seen: set[tuple[str, str]] = set()
+    results: list[ExtractedEntity] = []
+
+    def _add(etype: str, evalue: str) -> None:
+        key = (etype, evalue.upper() if etype == "CVE" else evalue)
+        if key not in seen:
+            seen.add(key)
+            results.append(ExtractedEntity(entity_type=etype, entity_value=evalue))
+
+    # Hashes first so long hex strings are claimed before domain regex runs
+    for match in _RE_SHA256.finditer(text):
+        _add("SHA256", match.group())
+
+    for match in _RE_SHA1.finditer(text):
+        val = match.group()
+        # Skip if already captured as part of a SHA-256
+        if not any(val in e.entity_value for e in results if e.entity_type == "SHA256"):
+            _add("SHA1", val)
+
+    for match in _RE_MD5.finditer(text):
+        val = match.group()
+        already_longer = any(
+            val in e.entity_value
+            for e in results
+            if e.entity_type in ("SHA1", "SHA256")
+        )
+        if not already_longer:
+            _add("MD5", val)
+
+    # CVEs
+    for match in _RE_CVE.finditer(text):
+        _add("CVE", match.group().upper())
+
+    # IPv6 before IPv4 to avoid partial matches
+    for match in _RE_IPV6.finditer(text):
+        _add("IPv6", match.group())
+
+    for match in _RE_IPV4.finditer(text):
+        _add("IPv4", match.group())
+
+    # Domains — skip values that look like plain IPv4 or are in the stoplist
+    for match in _RE_DOMAIN.finditer(text):
+        val = match.group().lower()
+        if val in _DOMAIN_STOPWORDS:
+            continue
+        # Avoid re-capturing things already tagged as IPv4
+        if any(e.entity_value == match.group() and e.entity_type == "IPv4"
+               for e in results):
+            continue
+        _add("DOMAIN", val)
+
+    return results
+
+
+def extract_and_store(source_id: int, cleaned_text: str) -> list[ExtractedEntity]:
+    """
+    Extract all IOCs from *cleaned_text* and persist each one to the
+    ``entities`` table linked to *source_id* (raw_items.id).
+
+    Returns the list of extracted entities for optional downstream use
+    (e.g. logging, testing).
+    """
+    entities = extract_entities(cleaned_text)
+
+    for entity in entities:
+        try:
+            insert_entity(
+                source_id=source_id,
+                entity_type=entity.entity_type,
+                entity_value=entity.entity_value,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to insert entity (%s=%s) for source_id=%d: %s",
+                entity.entity_type, entity.entity_value, source_id, exc,
+            )
+
+    logger.info(
+        "[entity_extractor] source_id=%d → %d entities extracted",
+        source_id, len(entities),
+    )
+    return entities
+______________________
+______________________
+ner_spacy.py
+************
+"""
+enrichment/ner_spacy.py
+========================
+spaCy-based Named Entity Recognition (NER) for threat intelligence text.
+
+What it extracts
+-----------------
+  THREAT_ACTOR   Persons / groups identified as attackers (spaCy PERSON label
+                 + custom org patterns like APT groups)
+  MALWARE        Known malware family names (via custom EntityRuler)
+
+Custom patterns cover the most commonly reported malware families and APT
+group aliases so the base en_core_web_sm model is boosted with domain
+knowledge.  The pattern list is intentionally extensible — add new entries
+to MALWARE_PATTERNS or APT_PATTERNS as needed.
+
+All results are persisted to the ``entities`` table via db/queries.py.
+
+Usage
+-----
+    from enrichment.ner_spacy import extract_and_store_ner
+
+    extract_and_store_ner(source_id=42, cleaned_text="Lazarus Group deployed WannaCry...")
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import NamedTuple
+
+import spacy
+from spacy.language import Language
+from spacy.pipeline import EntityRuler
+
+from db.sqlite_manager import insert_entity
+
+logger = logging.getLogger(__name__)
+
+# ── Custom pattern catalogue ──────────────────────────────────────────────────
+
+# Malware family names (case-insensitive matching via lowercase patterns)
+MALWARE_PATTERNS: list[dict] = [
+    # Ransomware
+    {"label": "MALWARE", "pattern": "WannaCry"},
+    {"label": "MALWARE", "pattern": "WannaCrypt"},
+    {"label": "MALWARE", "pattern": "NotPetya"},
+    {"label": "MALWARE", "pattern": "Petya"},
+    {"label": "MALWARE", "pattern": "REvil"},
+    {"label": "MALWARE", "pattern": "LockBit"},
+    {"label": "MALWARE", "pattern": "BlackCat"},
+    {"label": "MALWARE", "pattern": "Conti"},
+    {"label": "MALWARE", "pattern": "Ryuk"},
+    {"label": "MALWARE", "pattern": "DarkSide"},
+    {"label": "MALWARE", "pattern": "Hive"},
+    {"label": "MALWARE", "pattern": "BlackMatter"},
+    {"label": "MALWARE", "pattern": "Clop"},
+    # Banking trojans
+    {"label": "MALWARE", "pattern": "Emotet"},
+    {"label": "MALWARE", "pattern": "TrickBot"},
+    {"label": "MALWARE", "pattern": "Dridex"},
+    {"label": "MALWARE", "pattern": "ZeuS"},
+    {"label": "MALWARE", "pattern": "Zeus"},
+    {"label": "MALWARE", "pattern": "Qakbot"},
+    {"label": "MALWARE", "pattern": "QBot"},
+    {"label": "MALWARE", "pattern": "IcedID"},
+    # RATs / backdoors
+    {"label": "MALWARE", "pattern": "Cobalt Strike"},
+    {"label": "MALWARE", "pattern": "Metasploit"},
+    {"label": "MALWARE", "pattern": "AsyncRAT"},
+    {"label": "MALWARE", "pattern": "njRAT"},
+    {"label": "MALWARE", "pattern": "Agent Tesla"},
+    {"label": "MALWARE", "pattern": "AgentTesla"},
+    {"label": "MALWARE", "pattern": "NanoCore"},
+    {"label": "MALWARE", "pattern": "DarkComet"},
+    {"label": "MALWARE", "pattern": "Remcos"},
+    # Worms / exploits
+    {"label": "MALWARE", "pattern": "EternalBlue"},
+    {"label": "MALWARE", "pattern": "Log4Shell"},
+    {"label": "MALWARE", "pattern": "Mirai"},
+    {"label": "MALWARE", "pattern": "Sliver"},
+    {"label": "MALWARE", "pattern": "Havoc"},
+    # Spyware / info stealers
+    {"label": "MALWARE", "pattern": "Pegasus"},
+    {"label": "MALWARE", "pattern": "FinFisher"},
+    {"label": "MALWARE", "pattern": "Redline"},
+    {"label": "MALWARE", "pattern": "RedLine Stealer"},
+    {"label": "MALWARE", "pattern": "Raccoon"},
+    {"label": "MALWARE", "pattern": "Vidar"},
+]
+
+# APT group / threat-actor aliases that spaCy's PERSON label often misses
+APT_PATTERNS: list[dict] = [
+    {"label": "THREAT_ACTOR", "pattern": "Lazarus Group"},
+    {"label": "THREAT_ACTOR", "pattern": "Lazarus"},
+    {"label": "THREAT_ACTOR", "pattern": "APT28"},
+    {"label": "THREAT_ACTOR", "pattern": "Fancy Bear"},
+    {"label": "THREAT_ACTOR", "pattern": "APT29"},
+    {"label": "THREAT_ACTOR", "pattern": "Cozy Bear"},
+    {"label": "THREAT_ACTOR", "pattern": "APT41"},
+    {"label": "THREAT_ACTOR", "pattern": "APT10"},
+    {"label": "THREAT_ACTOR", "pattern": "APT32"},
+    {"label": "THREAT_ACTOR", "pattern": "OceanLotus"},
+    {"label": "THREAT_ACTOR", "pattern": "Sandworm"},
+    {"label": "THREAT_ACTOR", "pattern": "Turla"},
+    {"label": "THREAT_ACTOR", "pattern": "Charming Kitten"},
+    {"label": "THREAT_ACTOR", "pattern": "APT35"},
+    {"label": "THREAT_ACTOR", "pattern": "Scattered Spider"},
+    {"label": "THREAT_ACTOR", "pattern": "LAPSUS$"},
+    {"label": "THREAT_ACTOR", "pattern": [{"LOWER": "lapsus"}, {"TEXT": "$"}]},
+    {"label": "THREAT_ACTOR", "pattern": "Equation Group"},
+    {"label": "THREAT_ACTOR", "pattern": "DarkHalo"},
+    {"label": "THREAT_ACTOR", "pattern": "UNC2452"},
+    {"label": "THREAT_ACTOR", "pattern": "SolarWinds Attackers"},
+]
+
+# ── Model singleton ───────────────────────────────────────────────────────────
+
+_NLP: Language | None = None
+
+
+def _get_nlp() -> Language:
+    """
+    Load en_core_web_sm once and inject the custom EntityRuler before the
+    built-in NER component so custom patterns take precedence.
+    """
+    global _NLP
+    if _NLP is not None:
+        return _NLP
+
+    logger.info("[ner_spacy] Loading spaCy model en_core_web_sm …")
+    nlp = spacy.load("en_core_web_sm")
+
+    # EntityRuler added *before* ner so it can set spans that ner won't override
+    ruler: EntityRuler = nlp.add_pipe(
+        "entity_ruler",
+        before="ner",
+        config={"overwrite_ents": True},
+    )
+    ruler.add_patterns(MALWARE_PATTERNS + APT_PATTERNS)
+
+    _NLP = nlp
+    logger.info("[ner_spacy] Model ready with %d custom patterns.",
+                len(MALWARE_PATTERNS) + len(APT_PATTERNS))
+    return _NLP
+
+
+# ── Public interface ───────────────────────────────────────────────────────────
+
+class NEREntity(NamedTuple):
+    entity_type:  str   # "THREAT_ACTOR" or "MALWARE"
+    entity_value: str
+
+
+def extract_ner_entities(text: str) -> list[NEREntity]:
+    """
+    Run NER over *text* and return deduplicated THREAT_ACTOR and MALWARE
+    entities.
+
+    Mapping from spaCy labels:
+        PERSON  → THREAT_ACTOR  (individuals named in threat reports)
+        MALWARE → MALWARE       (set by custom EntityRuler)
+        THREAT_ACTOR → THREAT_ACTOR (set by custom EntityRuler for APT groups)
+
+    GPE / ORG labels are intentionally excluded to reduce false positives
+    (country names and vendor names are not threat actors).
+    """
+    if not text or not isinstance(text, str):
+        return []
+
+    nlp  = _get_nlp()
+    # spaCy processes up to max_length chars; split long documents to be safe
+    doc  = nlp(text[:100_000])
+
+    seen:    set[tuple[str, str]] = set()
+    results: list[NEREntity]      = []
+
+    # List of common words in PERSON entities that are unlikely to be actual threat actors
+    SAFE_TITLES = {"researcher", "analyst", "expert", "author", "director", "ceo", "reporter", "dr", "mr", "mrs"}
+
+    for ent in doc.ents:
+        raw_label = ent.label_
+        raw_value = ent.text.strip()
+
+        if not raw_value:
+            continue
+
+        if raw_label == "PERSON":
+            # --- FILTER FALSE POSITIVES ---
+            # Take the token immediately preceding the PERSON entity (if any) to check for safe titles
+            prev_token = doc[ent.start - 1].text.lower() if ent.start > 0 else ""
+            
+            # If the previous token is a common safe title, skip this entity to reduce false positives
+            if prev_token in SAFE_TITLES:
+                continue
+            
+            etype = "THREAT_ACTOR"
+        elif raw_label == "MALWARE":
+            etype = "MALWARE"
+        elif raw_label == "THREAT_ACTOR":
+            etype = "THREAT_ACTOR"
+        else:
+            continue  # ignore GPE, ORG, DATE, etc.
+
+        key = (etype, raw_value.lower())
+        if key not in seen:
+            seen.add(key)
+            results.append(NEREntity(entity_type=etype, entity_value=raw_value))
+ 
+    return results
+
+
+def extract_and_store_ner(source_id: int, cleaned_text: str) -> list[NEREntity]:
+    """
+    Extract THREAT_ACTOR and MALWARE entities from *cleaned_text* and
+    persist them to the ``entities`` table linked to *source_id*.
+
+    Returns the list of extracted entities for testing / logging.
+    """
+    entities = extract_ner_entities(cleaned_text)
+
+    for entity in entities:
+        try:
+            insert_entity(
+                source_id=source_id,
+                entity_type=entity.entity_type,
+                entity_value=entity.entity_value,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to insert NER entity (%s=%s) for source_id=%d: %s",
+                entity.entity_type, entity.entity_value, source_id, exc,
+            )
+
+    logger.info(
+        "[ner_spacy] source_id=%d → %d NER entities extracted",
+        source_id, len(entities),
+    )
+    return entities
+______________________
+______________________
+behavior_translator.py
+**********************
+"""
+FILE: enrichment/behavior_translator.py
+ROLE: Semantic Translation (Phase 3)
+PURPOSE: Implements the HyDE pattern. Instructs the LLM to read informal 
+OSINT text and output a strict JSON array of single-sentence technical behaviors.
+"""
+import json
+import logging
+from llm.ollama_client import get_llm
+from langchain_core.prompts import PromptTemplate
+
+logger = logging.getLogger(__name__)
+
+# Strict prompt template requiring a specific JSON schema
+HYDE_PROMPT = """
+You are an expert Cyber Threat Intelligence Analyst.
+Read the following translated OSINT text. Extract the core adversarial behaviors and technical actions.
+Convert these into a strict JSON array containing distinct, single-sentence technical summaries.
+Do NOT include any explanations, greetings, or markdown outside of the JSON.
+
+JSON Schema Requirement:
+{{"behaviors": ["Tech sentence 1", "Tech sentence 2"]}}
+
+Input Text:
+{osint_text}
+"""
+
+def translate_to_behaviors(osint_text: str) -> list:
+    """Passes text to Llama 3 and returns a list of technical behavior strings."""
+    logger.info("[*] Translating OSINT text to technical behaviors via LLM (HyDE)...")
+    
+    llm = get_llm()
+    prompt = PromptTemplate(input_variables=["osint_text"], template=HYDE_PROMPT)
+    chain = prompt | llm
+    
+    try:
+        # Generate LLM response
+        response = chain.invoke({"osint_text": osint_text})
+        
+        # Clean up possible markdown code blocks surrounding the JSON
+        clean_json_str = response.strip().strip("```json").strip("```").strip()
+        data = json.loads(clean_json_str)
+        
+        behaviors = data.get("behaviors", [])
+        logger.info(f"[+] Extracted {len(behaviors)} distinct behaviors.")
+        return behaviors
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"[-] LLM failed to return valid JSON. Error: {e}\nRaw LLM Output: {response}")
+        return []
+    except Exception as e:
+        logger.error(f"[-] Behavior translation failed: {e}")
+        return []
+______________________
+______________________
+kg_engine.py
+***********
+"""
+FILE: enrichment/kg_engine.py
+ROLE: Knowledge Engine & Zero-Day Evaluator (Phase 4)
+PURPOSE: Executes semantic search and aggregates multi-hop graph paths 
+(CVE -> MITRE -> Software).
+"""
+import logging
+from sentence_transformers import SentenceTransformer
+from db.neo4j_manager import GraphConnector
+
+logger = logging.getLogger(__name__)
+
+class KnowledgeEngine:
+    def __init__(self):
+        logger.info("[*] Spinning up Knowledge Engine...")
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.graph = GraphConnector()
+
+    def evaluate_threat(self, behaviors: list) -> dict:
+        zero_day_flag = True 
+        matched_threats = []
+        explicit_techniques = set()
+        blast_radius = set()
+        
+        if not behaviors:
+            return {"matched_threats": [], "techniques": [], "systems_at_risk": [], "is_zero_day": zero_day_flag}
+
+        logger.info(f"[*] Querying Neo4j for {len(behaviors)} behaviors (Threshold >= 80%)...")
+        
+        for sentence in behaviors:
+            vector = self.model.encode(sentence).tolist()
+            results = self.graph.vector_search(post_vector=vector, threshold=0.80)
+            
+            if results:
+                zero_day_flag = False
+                
+                for record in results:
+                    # Capture CVE or MITRE ID
+                    threat_id = record.get("threat_id")
+                    if threat_id and threat_id not in matched_threats:
+                        matched_threats.append(threat_id)
+                    
+                    # Capture Explicitly mapped TTPs (if it was a CVE that had a hard edge to MITRE)
+                    ttps = record.get("explicit_ttps", [])
+                    for ttp in ttps:
+                        if ttp: explicit_techniques.add(ttp)
+                        
+                    # Aggregate Blast Radius (Direct AFFECTS + multi-hop TARGETS)
+                    systems = record.get("systems_at_risk", [])
+                    for sys in systems:
+                        if sys: blast_radius.add(sys)
+                        
+        payload = {
+            "matched_threats": matched_threats,
+            "techniques": list(explicit_techniques),
+            "systems_at_risk": list(blast_radius),
+            "is_zero_day": zero_day_flag
+        }
+        
+        logger.info(f"[+] Evaluation Complete. Zero-Day: {zero_day_flag}. Matches: {len(matched_threats)}. Systems at risk: {len(blast_radius)}")
+        return payload
+
+    def close(self):
+        self.graph.close()

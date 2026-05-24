@@ -13,7 +13,7 @@ COMMAND: python -m unittest tests.03_test_integration
 import os
 import unittest
 from pathlib import Path
-from db.db import init_db, DB_PATH
+from db.sqlite_manager import init_db, DB_PATH
 from collectors.rss_collector import RSSCollector
 
 class TestPipelineIntegration(unittest.TestCase):

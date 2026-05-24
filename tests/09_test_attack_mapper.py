@@ -12,7 +12,7 @@ COMMAND: python -m unittest tests.09_test_attack_mapper
 
 import unittest
 from unittest.mock import patch
-from enrichment.attack_mapper import validate_ttp_id
+from docs.attack_mapper import validate_ttp_id
 
 class TestAttackMapper(unittest.TestCase):
     

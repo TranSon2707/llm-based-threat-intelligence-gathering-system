@@ -1,0 +1,1778 @@
+// add all files in collector to feed for AI instead of feed each file separately
+______________________
+______________________
+backfiller.py
+*************
+"""
+FILE: collectors/backfiller.py
+ROLE: Periodic Baseline Updater
+PURPOSE:
+  Keeps the Neo4j Knowledge Graph fresh after the initial baseline sync.
+  Runs two tasks on a schedule (e.g. weekly cron job):
+
+  Task 1 — NVD Sliding Window Sync:
+    Fetches CVEs published or modified in the last N days from NVD,
+    embeds their descriptions, and merges them into the graph.
+    Also applies CTID CVE->ATT&CK mappings to any newly added CVEs.
+
+  Task 2 — MITRE ATT&CK Re-Sync:
+    Re-downloads the MITRE STIX feed and merges any new or updated
+    techniques into the graph. New TTP nodes automatically get picked
+    up by the existing vector index.
+
+  Uses sync_state.json to checkpoint progress so it is safe to interrupt
+  and resume without losing work or making duplicate API calls.
+
+RELATIONSHIP TO BASELINE SCRIPTS:
+  sync_mitre_baseline.py  — run ONCE to build the initial MITRE graph
+  sync_nvd_baseline.py    — run ONCE to build the initial CVE graph
+  backfiller.py           — run PERIODICALLY to keep both sides updated
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import logging
+import requests
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from sentence_transformers import SentenceTransformer
+from collectors.nvd_collector import NVDCollector
+from db.neo4j_manager import GraphConnector
+from sync_nvd_baseline import fetch_ctid_mapping
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+MITRE_STIX_URL = (
+    "https://raw.githubusercontent.com/mitre/cti/master/"
+    "enterprise-attack/enterprise-attack.json"
+)
+
+STATE_FILE = Path("data/sync_state.json")
+
+
+# ── State Management ──────────────────────────────────────────────────────────
+
+def _load_state() -> dict[str, Any]:
+    """Loads the sync checkpoint state from disk."""
+    if STATE_FILE.exists():
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            logger.warning("[!] sync_state.json corrupted. Initializing fresh state.")
+
+    return {
+        "last_nvd_sync":   None,   # ISO timestamp of last NVD sliding window sync
+        "last_mitre_sync": None,   # ISO timestamp of last MITRE re-sync
+    }
+
+
+def _save_state(state: dict[str, Any]) -> None:
+    """Commits the current checkpoint state to disk."""
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=4)
+
+
+# ── Task 1: NVD Sliding Window Sync ──────────────────────────────────────────
+
+def run_nvd_sync(days_back: int = 30) -> None:
+    """
+    Fetches CVEs published or modified in the last `days_back` days from NVD.
+    Embeds each CVE description and merges it into the Neo4j graph.
+    Applies CTID CVE->ATT&CK mappings to build EXPLOITS_TECHNIQUE edges
+    for any newly added CVEs that appear in the CTID dataset.
+
+    Safe to run repeatedly — MERGE in Neo4j is idempotent.
+    """
+    logger.info(f"\n[*] Starting NVD {days_back}-day sliding window sync...")
+
+    model     = SentenceTransformer('all-MiniLM-L6-v2')
+    graph     = GraphConnector()
+    collector = NVDCollector()
+
+    # Fetch CTID mapping so we can wire up any new CVE->TTP edges
+    cve_to_ttps = fetch_ctid_mapping()
+
+    records = collector.fetch_by_time(days_back=days_back, max_results=5000)
+    logger.info(f"[-] Fetched {len(records)} CVE records from NVD.")
+
+    count = 0
+    for record in records:
+        try:
+            cve_id      = record["title"]
+            description = record["description"]
+            cvss_score  = record.get("raw", {}).get("cvss_score")
+
+            # 1. Embed and merge CVE node
+            embedding = model.encode(description).tolist()
+            graph.merge_cve(
+                cve_id=cve_id,
+                description=description,
+                cvss_score=cvss_score,
+                embedding=embedding,
+            )
+
+            # 2. Rebuild AFFECTS edges for affected software
+            affected_software = record.get("raw", {}).get("affected_software", [])
+            for software_name in affected_software:
+                if software_name:
+                    graph.link_cve_software(
+                        cve_id=cve_id,
+                        software_name=software_name.strip().lower(),
+                    )
+
+            # 3. Apply CTID mapping for CVE->MITRE edges
+            ttps = cve_to_ttps.get(cve_id.upper(), [])
+            for ttp_id in ttps:
+                graph.link_cve_mitre(cve_id=cve_id, ttp_id=ttp_id)
+
+            count += 1
+
+        except Exception as e:
+            logger.warning(f"[!] Failed to process CVE {record.get('title')}: {e}")
+            continue
+
+    graph.close()
+    logger.info(f"[+] NVD sync complete. {count} CVE nodes merged.")
+
+
+# ── Task 2: MITRE ATT&CK Re-Sync ─────────────────────────────────────────────
+
+def run_mitre_sync() -> None:
+    """
+    Re-downloads the full MITRE ATT&CK STIX feed and merges any new or
+    updated techniques into the Neo4j graph.
+
+    New TTP nodes get embedded and are immediately searchable via the
+    existing vector index — no index rebuild required.
+    Existing nodes are updated in-place via MERGE + SET.
+    """
+    logger.info("\n[*] Starting MITRE ATT&CK re-sync...")
+
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    graph = GraphConnector()
+
+    logger.info(f"[-] Fetching MITRE STIX feed from {MITRE_STIX_URL}...")
+    response = requests.get(MITRE_STIX_URL, timeout=60)
+    response.raise_for_status()
+    stix_data = response.json()
+
+    objects = stix_data.get("objects", [])
+    count   = 0
+
+    for obj in objects:
+        if obj.get("type") != "attack-pattern":
+            continue
+
+        ext_refs = obj.get("external_references", [])
+        ttp_id   = next(
+            (ref["external_id"] for ref in ext_refs
+             if ref.get("source_name") == "mitre-attack"),
+            None,
+        )
+
+        if not ttp_id:
+            continue
+
+        name        = obj.get("name", "Unknown")
+        description = obj.get("description", "")
+
+        try:
+            # 1. Embed and merge TTP node (updates description + embedding if changed)
+            embedding = model.encode(description).tolist()
+            graph.merge_mitre_ttp(
+                ttp_id=ttp_id,
+                name=name,
+                description=description,
+                embedding=embedding,
+            )
+
+            # 2. Rebuild TARGETS edges for platforms
+            platforms = obj.get("x_mitre_platforms", [])
+            for platform in platforms:
+                graph.link_mitre_software(
+                    ttp_id=ttp_id,
+                    software_name=platform.strip().lower(),
+                )
+
+            count += 1
+
+        except Exception as e:
+            logger.warning(f"[!] Failed to process TTP {ttp_id}: {e}")
+            continue
+
+    graph.close()
+    logger.info(f"[+] MITRE re-sync complete. {count} TTP nodes merged.")
+
+
+# ── Main Entry Point ──────────────────────────────────────────────────────────
+
+def main() -> None:
+    state = _load_state()
+
+    print("\nBackfiller — Select Operation:")
+    print("1. NVD Sliding Window Sync (last 30 days)")
+    print("2. MITRE ATT&CK Re-Sync (full feed, updates existing nodes)")
+    print("3. Run Both")
+
+    choice = input("Enter choice (1/2/3): ").strip()
+
+    if choice == "1":
+        run_nvd_sync(days_back=30)
+        state["last_nvd_sync"] = datetime.now(timezone.utc).isoformat()
+
+    elif choice == "2":
+        run_mitre_sync()
+        state["last_mitre_sync"] = datetime.now(timezone.utc).isoformat()
+
+    elif choice == "3":
+        run_nvd_sync(days_back=30)
+        state["last_nvd_sync"] = datetime.now(timezone.utc).isoformat()
+
+        # Brief pause between the two network-heavy operations
+        logger.info("[-] Sleeping 5 seconds before MITRE sync...")
+        time.sleep(5)
+
+        run_mitre_sync()
+        state["last_mitre_sync"] = datetime.now(timezone.utc).isoformat()
+
+    else:
+        print("[!] Invalid choice. Exiting.")
+        return
+
+    _save_state(state)
+    logger.info(f"[+] State saved. Last NVD sync: {state['last_nvd_sync']} | Last MITRE sync: {state['last_mitre_sync']}")
+
+
+if __name__ == "__main__":
+    main()
+______________________
+______________________
+base_collector.py
+*****************
+from __future__ import annotations
+
+import os
+import datetime
+import hashlib
+import time
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any
+from db.sqlite_manager import insert_raw_item
+
+class BaseCollector(ABC):
+    """
+    Abstract base class for all threat intelligence collectors.
+    Every subclass must implement fetch_by_time(), fetch_by_keyword(),
+    and normalize().
+    """
+
+    DEFAULT_DELAY: float = 1.0  # seconds between requests, overridden per subclass
+
+    def __init__(self, source_name: str) -> None:
+        self.source_name = source_name
+        self._last_request: float = 0.0
+        # Phase 2: Strangler Fig Toggle
+        self.use_graph = os.getenv("USE_GRAPH", "False").lower() == "true"
+
+    # ── Abstract interface ────────────────────────────────────────────────────
+
+    @abstractmethod
+    def fetch_by_time(
+        self,
+        days_back: int | None = 7,
+        year: int | None = None,
+        max_results: int = 200,
+    ) -> list[dict[str, Any]]:
+        """
+        Task 1 - Fetch records within a time window.
+
+        Two modes (mutually exclusive, year takes priority if both given):
+          - days_back : last N days rolling from now  (default 7)
+          - year      : full calendar year, e.g. 2021
+
+        Returns a list of normalized record dicts ready for DB insert.
+        """
+        pass
+
+    @abstractmethod
+    def fetch_by_keyword(
+        self,
+        query: str,
+        max_results: int = 20,
+    ) -> list[dict[str, Any]]:
+        """
+        Task 2 - Search by keyword, phrase, or CVE ID.
+
+          - Plain word   'wannacry'       -> fuzzy full-text search
+          - Phrase       'apache log4j'   -> both words must appear
+          - Partial      'wanna'          -> still matches WannaCry
+          - CVE ID       'CVE-2021-44228' -> exact-ID endpoint (NVD) or
+                                            full-text (OTX / RSS)
+          - Multi-word   'log4shell rce'  -> AND logic on RSS
+        """
+        pass
+
+    @abstractmethod
+    def normalize(self, raw_data: list[Any]) -> list[dict[str, Any]]:
+        """
+        Convert raw API response objects into standard record dicts.
+        Must call self.format_record() for every item.
+        """
+        pass
+
+    def collect_and_store(
+        self,
+        db_path: Path,     
+        mode: str = "time", 
+        **fetch_kwargs: Any,
+    ) -> tuple[int, int]:
+        """
+        Chains fetch -> DB insert in one call.
+        Routes through db/queries.py to maintain strict SQL isolation.
+
+        Args:
+            db_path      : path to the SQLite database file.
+            mode         : 'time'    -> calls fetch_by_time(**fetch_kwargs)
+                           'keyword' -> calls fetch_by_keyword(**fetch_kwargs)
+            fetch_kwargs : forwarded directly to the chosen fetch method.
+
+        Returns:
+            (inserted, skipped)
+                inserted - new records written to DB.
+                skipped  - duplicates blocked by dedup_key UNIQUE constraint.
+        """
+
+        if mode == "keyword":
+            records = self.fetch_by_keyword(**fetch_kwargs)
+        else:
+            records = self.fetch_by_time(**fetch_kwargs)
+
+        inserted = skipped = 0
+
+        # --- Phase 2: Graph Path ---
+        if self.use_graph:
+            print(f"[*] {self.source_name}: Routing data to Neo4j Knowledge Graph...")
+            for record in records:
+                # insert_threat_intel(record)
+                inserted += 1
+            return inserted, 0
+
+        # --- Phase 1: Legacy SQLite Path ---
+        for record in records:
+            try:
+                data_tuple = (
+                    record["source"],
+                    record["title"],
+                    record["description"],
+                    record["source_url"],
+                    record["published_date"],
+                    record["collected_at"],
+                    str(record.get("raw", {})),   # stored as string per schema
+                    record["dedup_key"],
+            )
+                insert_raw_item(data_tuple)
+                inserted += 1
+            except Exception as e:
+                print(f"[!] Database error on insert: {e}")
+                skipped += 1
+
+        print(
+            f"[{self.source_name}] processed {inserted} record(s), "
+            f"skipped/errored {skipped}."
+        )
+        return inserted, skipped
+
+    # ── Shared helpers ────────────────────────────────────────────────────────
+
+    def _throttle(self) -> None:
+        """Enforce minimum delay between HTTP requests."""
+        elapsed = time.time() - self._last_request
+        if elapsed < self.DEFAULT_DELAY:
+            time.sleep(self.DEFAULT_DELAY - elapsed)
+        self._last_request = time.time()
+
+    def format_record(
+        self,
+        title: str | None,
+        description: str | None,
+        url: str | None,
+        published_date: str | None,
+        raw: dict | None = None,
+    ) -> dict[str, Any]:
+        """
+        Produces the standard DB-ready dict every collector must output.
+
+        dedup_key field:
+            Computed as SHA-256(source + title + description[:300]).
+            Truncating description to 300 chars keeps the hash stable even
+            when a source appends trailing metadata on repeat fetches.
+
+            Same CVE arriving from NVD and OTX -> two distinct dedup_keys
+            (source is part of the hash) -> both records kept, which is correct
+            because they carry different metadata (CVSS vs IOC counts).
+        """
+        clean_title = title.strip() if title else "No Title"
+        clean_desc  = description.strip() if description else "No Description"
+        safe_raw = raw or {}
+
+        return {
+            "source":         self.source_name,
+            "title":          clean_title,
+            "description":    clean_desc,
+            "source_url":     url or "",
+            "published_date": published_date or "",
+            "collected_at":   datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "processed":      0,
+            "raw":            raw or {},
+            "dedup_key":      self._make_dedup_key(clean_title, clean_desc, safe_raw),
+        }
+
+    def _make_dedup_key(self, title: str, description: str, raw: dict) -> str:
+        """
+        Default SHA-256 fingerprint. 
+        Subclasses can override this to use structural IDs (e.g., post_id).
+        """
+        content = f"{self.source_name}:{title}:{description[:300]}"
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+'''
+# ── Internal DB helper ────────────────────────────────────────────────────────
+
+@contextmanager
+def _db_connection(db_path: Path):
+    """
+    Minimal connection context used only by collect_and_store().
+    The full query interface lives in db/queries.py.
+    """
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+''' 
+______________________
+______________________
+nvd_collector.py
+****************
+from __future__ import annotations
+
+import os
+import re
+import requests
+from datetime import datetime, timedelta, timezone
+from typing import Any
+import hashlib
+from collectors.base_collector import BaseCollector
+
+# Regular expression to identify CVE IDs (e.g., CVE-2021-44228)
+CVE_ID_PATTERN = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+
+# Valid severity labels accepted by NVD cvssV3Severity parameter
+VALID_SEVERITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
+class NVDCollector(BaseCollector):
+    """
+    Fetches CVE data from the NVD REST API v2.
+    https://nvd.nist.gov/developers/vulnerabilities
+
+    Rate limits:
+        No API key : 5 requests / 30 s  -> DEFAULT_DELAY = 6.0 s
+        With API key: 50 requests / 30 s -> DEFAULT_DELAY = 0.6 s
+    """
+
+    DEFAULT_DELAY = 6.0
+
+    def __init__(self, api_key: str | None = None) -> None:
+        super().__init__(source_name="nvd")
+        self.base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+        self.api_key = api_key or os.getenv("NVD_API_KEY")
+        self.headers = {
+            "User-Agent": "llm-threat-intel-collector/1.0",
+            "Accept":     "application/json",
+        }
+        if self.api_key:
+            self.headers["apiKey"] = self.api_key
+            self.DEFAULT_DELAY = 0.6
+            print("[*] NVD API key detected. Using faster request rate.")
+        else:
+            print("[!] Warning: No NVD API key found. Requests will be slower and may fail under heavy load.")
+
+    # ── Task 1: fetch by time window ──────────────────────────────────────────
+
+    def fetch_by_time(
+        self,
+        days_back: int | None = 7,
+        year: int | None = None,
+        max_results: int = 200,
+        cvss_severity: str | None = None, 
+    ) -> list[dict[str, Any]]:
+        
+        # Enforce valid server-side values upfront
+        if cvss_severity is not None:
+            cvss_severity = cvss_severity.upper()
+            if cvss_severity not in VALID_SEVERITIES:
+                raise ValueError(
+                    f"Invalid cvss_severity '{cvss_severity}'. "
+                    f"Must be one of: {sorted(VALID_SEVERITIES)}"
+                )
+
+        if year is not None:
+            # Chunk the year into 4 quarters to safely bypass the NIST 120-day limit
+            chunks = [
+                (datetime(year, 1, 1, tzinfo=timezone.utc),  datetime(year, 3, 31, 23, 59, 59, tzinfo=timezone.utc)),
+                (datetime(year, 4, 1, tzinfo=timezone.utc),  datetime(year, 6, 30, 23, 59, 59, tzinfo=timezone.utc)),
+                (datetime(year, 7, 1, tzinfo=timezone.utc),  datetime(year, 9, 30, 23, 59, 59, tzinfo=timezone.utc)),
+                (datetime(year, 10, 1, tzinfo=timezone.utc), datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)),
+            ]
+            
+            all_results = []
+            for start, end in chunks:
+                remaining = max_results - len(all_results)
+                if remaining <= 0:
+                    break
+
+                params: dict[str, Any] = {
+                    # Added 'Z' to strictly follow NVD API ISO-8601 requirements
+                    "pubStartDate":   start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "pubEndDate":     end.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "resultsPerPage": min(remaining, 2000), 
+                    "startIndex":     0,
+                }
+                if cvss_severity:
+                    #params = cvss_severity
+                    params["cvssV3Severity"] = cvss_severity
+
+                all_results.extend(self._paginate(params, remaining))
+                
+            return all_results[:max_results]
+
+        else:
+            # Rolling window from now
+            end   = datetime.now(timezone.utc)
+            start = end - timedelta(days=days_back or 7)
+
+            params: dict[str, Any] = {
+                # Added 'Z' to strictly follow NVD API ISO-8601 requirements
+                "pubStartDate":   start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "pubEndDate":     end.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "resultsPerPage": min(max_results, 2000),
+                "startIndex":     0,
+            }
+            if cvss_severity:
+                #params = cvss_severity
+                params["cvssV3Severity"] = cvss_severity
+
+            return self._paginate(params, max_results) 
+
+    # ── Task 2: fetch by keyword or CVE ID ────────────────────────────────────
+
+    def fetch_by_keyword(
+        self,
+        query: str,
+        max_results: int = 20,
+    ) -> list[dict[str, Any]]:
+        """
+        Search CVEs by keyword, phrase, or exact CVE ID.
+
+        Matching behavior:
+            - Plain word  'wannacry'       -> fuzzy, NVD searches full description
+            - Phrase      'apache log4j'   -> both words must appear
+            - Partial     'wanna'          -> still matches WannaCry entries
+            - CVE ID      'CVE-2021-44228' -> routed to exact-ID endpoint
+            - Multi-word  'log4shell rce'  -> treated as phrase search by NVD
+
+        No exact match required - NVD keywordSearch is full-text across
+        CVE ID, description, and reference URLs.
+        """
+        query = query.strip()
+
+        if CVE_ID_PATTERN.match(query):
+            return self._fetch_by_cve_id(query)
+
+        params: dict[str, Any] = {
+            "keywordSearch":  query,
+            "resultsPerPage": min(max_results, 2000),
+            "startIndex":     0,
+        }
+        return self._paginate(params, max_results)
+
+    # ── Normalization ─────────────────────────────────────────────────────────
+
+    def normalize(self, raw_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        records = []
+        for container in raw_data:
+            cve    = container.get("cve", {})
+            cve_id = cve.get("id")
+            if not cve_id:
+                continue
+
+            description              = self._extract_english_description(
+                                           cve.get("descriptions", []))
+            published                = cve.get("published", "")
+            url                      = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+            cvss_score, cvss_sev, cvss_vec = self._extract_cvss(cve.get("metrics", {}))
+            cwes                     = self._extract_cwes(cve.get("weaknesses", []))
+
+            records.append(self.format_record(
+                title          = cve_id,
+                description    = description,
+                url            = url,
+                published_date = published,
+                raw            = {
+                    "cvss_score":    cvss_score,
+                    "cvss_severity": cvss_sev,
+                    "cvss_vector":   cvss_vec,
+                    "cwes":          cwes,
+                },
+            ))
+        return records
+
+    # ── Override _make_dedup_key───────────────────────────────────────────────
+    def _make_dedup_key(self, title: str, description: str, raw: dict) -> str:
+        """
+        Override: Hash the immutable CVE-ID to maintain a consistent 64-character 
+        SHA-256 schema, while ensuring SQLite upsert work for updated CVEs.
+        """
+        # The 'title' field for NVD records is always the CVE ID
+        content = f"{self.source_name}:id:{title}"
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    
+    # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _paginate(self, params: dict, max_results: int) -> list[dict[str, Any]]:
+        """Run paginated NVD requests until max_results reached or exhausted."""
+        all_vulns: list[dict] = []
+
+        while True:
+            self._throttle()
+            try:
+                resp = requests.get(
+                    self.base_url, headers=self.headers,
+                    params=params, timeout=30,
+                )
+                resp.raise_for_status()
+                data  = resp.json()
+                total = data.get("totalResults", 0)
+                batch = data.get("vulnerabilities", [])
+                all_vulns.extend(batch)
+
+                fetched = params["startIndex"] + len(batch)
+                if fetched >= min(total, max_results) or not batch:
+                    break
+                params["startIndex"] = fetched
+
+            except requests.exceptions.RequestException as e:
+                print(f"[!] NVD request error: {e}")
+                break
+
+        return self.normalize(all_vulns)
+
+    def _fetch_by_cve_id(self, cve_id: str) -> list[dict[str, Any]]:
+        """Exact CVE-ID lookup via dedicated NVD parameter."""
+        self._throttle()
+        try:
+            resp = requests.get(
+                self.base_url, headers=self.headers,
+                params={"cveId": cve_id.upper()}, timeout=30,
+            )
+            resp.raise_for_status()
+            vulns = resp.json().get("vulnerabilities", [])
+            if not vulns:
+                print(f"[!] CVE not found: {cve_id}")
+                return []
+            return self.normalize(vulns)
+        except requests.exceptions.RequestException as e:
+            print(f"[!] NVD CVE-ID lookup error: {e}")
+            return []
+
+    @staticmethod
+    def _extract_english_description(descriptions: list[dict]) -> str:
+        for d in descriptions:
+            if d.get("lang") == "en" and d.get("value"):
+                return d["value"]
+        if descriptions and descriptions[0].get("value"):
+            return descriptions[0]["value"]
+        return "No description available."
+
+    @staticmethod
+    def _extract_cvss(metrics: dict) -> tuple[float | None, str | None, str | None]:
+        for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+            entries = metrics.get(key, [])
+            if entries:
+                data = entries[0].get("cvssData", {})
+                return (
+                    data.get("baseScore"),
+                    data.get("baseSeverity"),
+                    data.get("vectorString"),
+                )
+        return None, None, None
+
+    @staticmethod
+    def _extract_cwes(weaknesses: list[dict]) -> list[str]:
+        return [
+            d["value"]
+            for w in weaknesses
+            for d in w.get("description", [])
+            if d.get("value", "").startswith("CWE-")
+        ]
+______________________
+______________________
+otx_collector.py
+****************
+from __future__ import annotations
+
+import os
+import requests
+from datetime import datetime, timedelta, timezone
+from typing import Any
+import hashlib
+from collectors.base_collector import BaseCollector
+
+
+class OTXCollector(BaseCollector):
+    """
+    Fetches threat pulse data from AlienVault OTX.
+    https://otx.alienvault.com/api
+
+    Free API key required: https://otx.alienvault.com
+    """
+
+    DEFAULT_DELAY = 1.0
+
+    def __init__(self, api_key: str | None = None) -> None:
+        super().__init__(source_name="alienvault")
+        self.api_key = api_key or os.getenv("OTX_API_KEY")
+        self.base_url = "https://otx.alienvault.com/api/v1"
+        self.headers = {
+            "User-Agent": "llm-threat-intel-collector/1.0",
+            "Accept":     "application/json",
+        }
+        if self.api_key:
+            self.headers["X-OTX-API-KEY"] = self.api_key
+            print("[*] OTX API key detected. Requests will be successful.")
+        else:
+            print("[!] Warning: No OTX API key found. Requests will likely fail.")
+
+    # ── Task 1: fetch by time window ──────────────────────────────────────────
+
+    def fetch_by_time(
+        self,
+        days_back: int | None = 7,
+        year: int | None = None,
+        max_results: int = 200,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch OTX pulses within a time window.
+
+        Examples:
+            col.fetch_by_time()               # last 7 days
+            col.fetch_by_time(days_back=30)   # last 30 days
+            col.fetch_by_time(year=2021)      # pulses created in 2021
+
+        Note: OTX activity endpoint filters by modified_since.
+        Year mode uses Jan 1 of that year as the cutoff.
+        """
+        if year is not None:
+            since = datetime(year, 1, 1, tzinfo=timezone.utc)
+        else:
+            since = datetime.now(timezone.utc) - timedelta(days=days_back or 7)
+
+        params = {
+            "limit":          min(max_results, 50),  # OTX max per page is 50
+            "modified_since": since.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        return self._paginate_activity(params, max_results)
+
+    # ── Task 2: fetch by keyword ──────────────────────────────────────────────
+
+    def fetch_by_keyword(
+        self,
+        query: str,
+        max_results: int = 20,
+    ) -> list[dict[str, Any]]:
+        """
+        Search OTX pulses by keyword, threat name, or malware family.
+
+        Matching behavior:
+            - 'WannaCry'       -> matches pulses about the WannaCry campaign
+            - 'wanna'          -> partial match, still finds WannaCry pulses
+            - 'ransomware'     -> matches any pulse tagged/described as ransomware
+            - 'CVE-2021-44228' -> matches pulses referencing Log4Shell by text
+
+        OTX search is full-text across pulse title, description, and tags.
+        Partial and case-insensitive matching supported server-side.
+
+        Note: for CVE-ID specific pulse lookup (more precise than keyword),
+        use fetch_by_cve_id() instead.
+        """
+        self._throttle()
+        try:
+            resp = requests.get(
+                f"{self.base_url}/search/pulses",
+                headers=self.headers,
+                params={"q": query.strip(), "limit": max_results},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            return self.normalize(results)
+        except requests.exceptions.RequestException as e:
+            print(f"[!] OTX keyword search error: {e}")
+            return []
+
+    def fetch_by_cve_id(self, cve_id: str) -> list[dict[str, Any]]:
+        """
+        Retrieve OTX pulses directly linked to a specific CVE ID.
+
+        Uses OTX's dedicated indicator endpoint:
+            GET /api/v1/indicator/CVE/<cve_id>/general
+
+        This is more precise than fetch_by_keyword("CVE-2017-0144") because:
+          - It only returns pulses that explicitly tagged this CVE as an IOC,
+            not pulses that merely mention the ID in free text.
+          - It also returns associated threat actors and malware families
+            that OTX has structurally linked to this CVE.
+
+        Typical usage in the enrichment pipeline:
+            # NVD returns CVE-2017-0144 (EternalBlue)
+            pulses = otx.fetch_by_cve_id("CVE-2017-0144")
+            # -> returns WannaCry, NotPetya, and other campaigns exploiting it
+
+        Args:
+            cve_id : CVE identifier string, e.g. 'CVE-2017-0144'.
+                     Normalized to uppercase internally.
+
+        Returns:
+            List of normalized record dicts, same schema as all other methods.
+            Empty list if CVE not found in OTX or on error.
+        """
+        cve_id = cve_id.upper().strip()
+        self._throttle()
+        try:
+            resp = requests.get(
+                f"{self.base_url}/indicator/CVE/{cve_id}/general",
+                headers=self.headers,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            # OTX indicator/CVE endpoint returns pulse_info.pulses list
+            pulses = data.get("pulse_info", {}).get("pulses", [])
+            if not pulses:
+                print(f"[!] No OTX pulses found for {cve_id}")
+                return []
+
+            records = self.normalize(pulses)
+
+            # Tag every record with the queried CVE ID so downstream
+            # enrichment knows which CVE triggered this collection
+            for r in records:
+                r["raw"].setdefault("linked_cve", cve_id)
+
+            return records
+
+        except requests.exceptions.RequestException as e:
+            print(f"[!] OTX CVE lookup error for {cve_id}: {e}")
+            return []
+
+    # ── Normalization ─────────────────────────────────────────────────────────
+
+    def normalize(self, raw_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        records = []
+        for pulse in raw_data:
+            pulse_id = pulse.get("id")
+            if not pulse_id:
+                continue
+
+            indicators = pulse.get("indicators", [])
+            ioc_counts: dict[str, int] = {}
+            for ind in indicators:
+                t = ind.get("type", "unknown")
+                ioc_counts[t] = ioc_counts.get(t, 0) + 1
+
+            # Handle cases where description is empty but tags exist, or both are empty
+            raw_desc = pulse.get("description")
+            if not raw_desc:
+                tags = pulse.get("tags", [])
+                raw_desc = f"Tags: {', '.join(tags)}" if tags else f"Pulse Name: {pulse.get('name')}"
+
+            records.append(self.format_record(
+                title          = pulse.get("name"),
+                description    = raw_desc,
+                url            = f"https://otx.alienvault.com/pulse/{pulse_id}",
+                published_date = pulse.get("created"),
+                raw            = {
+                    "pulse_id":         pulse_id,
+                    "adversary":        pulse.get("adversary", ""),
+                    "malware_families": [
+                        m.get("display_name", "")
+                        for m in pulse.get("malware_families", [])
+                    ],
+                    "attack_ids": [
+                        a.get("id", "") for a in pulse.get("attack_ids", [])
+                    ],
+                    "ioc_counts": ioc_counts,
+                    "tags":       pulse.get("tags", []),
+                },
+            ))
+        return records
+
+    # ── Override _make_dedup_key ──────────────────────────────────────────────
+    def _make_dedup_key(self, title: str, description: str, raw: dict) -> str:
+        """
+        Override: Hash the immutable pulse_id to maintain a consistent 64-character 
+        SHA-256 schema, while ensuring SQLite upsert work for updated pulses.
+        """
+        pulse_id = raw.get("pulse_id")
+        if pulse_id:
+            content = f"{self.source_name}:id:{pulse_id}"
+            return hashlib.sha256(content.encode("utf-8")).hexdigest()
+            
+        # Fallback to the base class default if extraction failed
+        return super()._make_dedup_key(title, description, raw)
+    
+    # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _paginate_activity(
+        self,
+        params: dict,
+        max_results: int,
+    ) -> list[dict[str, Any]]:
+        """Paginate OTX activity feed via the `next` URL OTX returns."""
+        all_records: list[dict] = []
+        url = f"{self.base_url}/pulses/activity"
+
+        while url and len(all_records) < max_results:
+            self._throttle()
+            try:
+                resp = requests.get(url, headers=self.headers,
+                                    params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                all_records.extend(self.normalize(data.get("results", [])))
+                url    = data.get("next")  # OTX returns full next-page URL
+                params = {}                # params already encoded in next URL
+            except requests.exceptions.RequestException as e:
+                print(f"[!] OTX activity fetch error: {e}")
+                break
+
+        return all_records[:max_results]
+______________________
+______________________
+rss_collector.py
+*************from __future__ import annotations
+
+import feedparser
+import hashlib
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime, timezone
+from typing import Any
+
+from collectors.base_collector import BaseCollector
+
+# Well-known security RSS feeds - extend as needed
+KNOWN_FEEDS: dict[str, str] = {
+    "exploitdb":         "https://www.exploit-db.com/rss.xml",
+    "bleeping_computer": "https://www.bleepingcomputer.com/feed/",
+    "sans_isc":          "https://isc.sans.edu/rssfeed_full.xml",
+    "packet_storm":      "https://rss.packetstormsecurity.com/files/",
+    # EXTENSION POINT: Add more feeds here as needed
+    "xakep":             "https://xakep.ru/category/news/feed/",  # Russian - passes through language_detector.py
+    # Reddit public RSS feeds (no API key required)
+    "reddit_netsec":        "https://www.reddit.com/r/netsec/.rss",
+    "reddit_cybersecurity": "https://www.reddit.com/r/cybersecurity/.rss",
+    "reddit_blueteamsec":   "https://www.reddit.com/r/blueteamsec/.rss",
+    "reddit_redteamsec":    "https://www.reddit.com/r/redteamsec/.rss",
+}
+
+# ---------------------------------------------------------------------------
+# Per-domain scraping config
+#
+# "selectors"    : CSS selectors tried IN ORDER. First match with meaningful
+#                  content wins.  Generic fallback ("p") is appended automatically
+#                  and only used if all named selectors fail.
+# "paywall_skip" : If True, skip scraping entirely and use the RSS summary.
+#                  Use for hard paywalls where scraping always returns noise.
+# "paywall_markers": Strings whose presence in scraped text signals a paywall
+#                  page was returned instead of article content.  When any
+#                  marker is found the scraper falls back to the RSS summary.
+# ---------------------------------------------------------------------------
+DOMAIN_CONFIG: dict[str, dict] = {
+    "xakep.ru": {
+        # Xakep is a subscription magazine. Free visitors see only a short
+        # teaser inside .post-box or .entry-content; everything below the
+        # fold is a subscription upsell block.  The generic <p> approach
+        # grabs the sidebar promo text ("Годовая подписка на Хакер …")
+        # instead of the teaser, so we use a specific selector chain.
+        "selectors": [
+            ".post-box",          # teaser block visible to free readers
+            ".entry-content",     # standard WordPress body
+            "article .content",
+        ],
+        "paywall_markers": [
+            "годовая подписка",   # "Annual subscription" promo header
+            "подписка на хакер",  # "Subscribe to Hacker"
+            "оформить подписку",  # "Subscribe now"
+        ],
+    },
+    "default": {
+        "selectors": [
+            "article",
+            "[itemprop='articleBody']",
+            ".article-body",
+            ".post-content",
+            ".entry-content",
+            ".article__body",
+            ".tm-article-body",   # Habr / Tproger
+            "main .content",
+        ],
+        "paywall_markers": [
+            "subscribe to read",
+            "create a free account",
+            "sign in to continue",
+            "this content is for subscribers",
+        ],
+    },
+}
+
+
+def _domain_cfg(url: str) -> dict:
+    """Return the DOMAIN_CONFIG entry that matches *url*, or 'default'."""
+    for domain, cfg in DOMAIN_CONFIG.items():
+        if domain != "default" and domain in (url or ""):
+            return cfg
+    return DOMAIN_CONFIG["default"]
+
+
+class RSSCollector(BaseCollector):
+    """
+    Fetches threat intelligence from public RSS/Atom feeds.
+    Defaults to Exploit-DB. No API key required for any feed.
+
+    Reddit subreddits (netsec, cybersecurity, blueteamsec, redteamsec) are
+    available via their public RSS endpoints in KNOWN_FEEDS - no PRAW or
+    Reddit API credentials needed.
+
+    Scraping strategy (per request, applied in normalize()):
+      1. Try domain-specific CSS selectors from DOMAIN_CONFIG.
+      2. Validate scraped text:
+           a. Must be longer than the RSS summary (otherwise scraping added nothing).
+           b. Must NOT contain paywall marker strings.
+      3. If validation fails → fall back to the original RSS summary.
+      4. Generic <p> soup is the last resort only for domains with no config.
+
+    """
+
+    DEFAULT_DELAY = 2.0
+
+    def __init__(self, feed_url: str = KNOWN_FEEDS["exploitdb"], source_name: str | None = None) -> None:
+        # Derive a sensible source_name from the feed URL when not supplied.
+        # e.g. "https://www.reddit.com/r/netsec/.rss" -> "reddit_netsec"
+        if source_name is None:
+            # Check if the feed_url matches a known feed key; use that as name
+            source_name = next(
+                (key for key, url in KNOWN_FEEDS.items() if url == feed_url),
+                "rss",   # generic fallback for custom feed URLs
+            )
+        super().__init__(source_name=source_name)
+        self.feed_url = feed_url
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def fetch_by_time(
+        self,
+        days_back: int | None = 7,
+        year: int | None = None,
+        max_results: int = 200,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch RSS entries within a time window.
+
+        Examples:
+            col.fetch_by_time()            # entries from last 7 days
+            col.fetch_by_time(year=2023)   # entries published in 2023
+
+        Filtering is client-side - the full feed is pulled then filtered by
+        the parsed published date of each entry.
+        """
+        raw_entries = self._fetch_raw()
+
+        if year is not None:
+            filtered = [
+                e for e in raw_entries
+                if self._entry_year(e.get("published")) == year
+            ]
+        else:
+            cutoff = (
+                datetime.now(timezone.utc).timestamp() - (days_back or 7) * 86400
+            )
+            filtered = [
+                e for e in raw_entries
+                if self._entry_timestamp(e.get("published")) >= cutoff
+            ]
+
+        return self.normalize(filtered[:max_results])
+
+    def fetch_by_keyword(
+        self,
+        query: str,
+        max_results: int = 20,
+    ) -> list[dict[str, Any]]:
+        """
+        Search RSS entries by keyword in title or description.
+
+        Matching behaviour:
+            'WannaCry'   → any entry mentioning WannaCry (case-insensitive)
+            'wanna'      → partial match
+            'apache rce' → ALL words must appear (AND logic)
+
+        Filtering is client-side.
+        """
+        raw_entries = self._fetch_raw()
+        terms = query.strip().lower().split()
+
+        filtered = [
+            e for e in raw_entries
+            if all(
+                term in str(e.get("title", "")).lower()
+                or term in str(e.get("summary", "")).lower()
+                for term in terms
+            )
+        ]
+
+        return self.normalize(filtered[:max_results])
+
+    # ── Normalization ─────────────────────────────────────────────────────────
+
+    def normalize(self, raw_data: list[Any]) -> list[dict[str, Any]]:
+        records = []
+        for entry in raw_data:
+            link     = entry.get("link")
+            entry_id = entry.get("id") or link
+            rss_summary = entry.get("summary") or entry.get("description") or ""
+
+            description = self._scrape_full_text(link, rss_summary)
+
+            records.append(self.format_record(
+                title          = entry.get("title"),
+                description    = description,
+                url            = link,
+                published_date = entry.get("published"),
+                raw            = {"entry_id": entry_id},
+            ))
+        return records
+
+    # ── Dedup key ─────────────────────────────────────────────────────────────
+
+    def _make_dedup_key(self, title: str, description: str, raw: dict) -> str:
+        """
+        Hash the immutable RSS entry ID / URL so that dynamic page changes
+        (navbar updates, sidebar content rotations) never create false duplicates.
+        """
+        entry_id = raw.get("entry_id")
+        content  = (
+            f"{self.source_name}:id:{entry_id}"
+            if entry_id
+            else f"{self.source_name}:{title}"   # malformed feed fallback
+        )
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    # ── Scraping helpers ──────────────────────────────────────────────────────
+
+    def _scrape_full_text(self, url: str | None, rss_summary: str) -> str:
+        """
+        Attempt to scrape the full article text from *url*.
+
+        Strategy
+        --------
+        1. Fetch the page with a browser-like User-Agent.
+        2. Try domain-specific CSS selectors (DOMAIN_CONFIG) in order.
+        3. Validate the result:
+             • Must be longer than the RSS summary (scraping must add value).
+             • Must not contain paywall marker strings (would be noise).
+        4. Fall back to the RSS summary on any failure or failed validation.
+
+        Returns the best available text, never an empty string (unless the
+        feed entry itself had no summary).
+        """
+        if not url:
+            return rss_summary
+
+        cfg = _domain_cfg(url)
+
+        try:
+            print(f"    [Scraping] {url}")
+            resp = requests.get(
+                url,
+                timeout=10,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+                },
+            )
+
+            if resp.status_code != 200:
+                print(f"    [!] HTTP {resp.status_code} - using RSS summary")
+                return rss_summary
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            scraped = self._extract_text(soup, cfg)
+
+            # ── Validation gate ───────────────────────────────────────────────
+            if not scraped:
+                print("    [!] No text extracted - using RSS summary")
+                return rss_summary
+
+            if self._is_paywall_content(scraped, cfg):
+                print("    [!] Paywall detected - using RSS summary")
+                return rss_summary
+
+            if len(scraped) <= len(rss_summary):
+                print("    [!] Scraped text not longer than summary - using RSS summary")
+                return rss_summary
+
+            return scraped
+
+        except Exception as exc:
+            print(f"    [!] Scraping failed: {exc} - using RSS summary")
+            return rss_summary
+
+    def _extract_text(self, soup: BeautifulSoup, cfg: dict) -> str:
+        """
+        Try each CSS selector in *cfg['selectors']* in order.
+        Returns the text of the first element that yields > 100 characters,
+        or an empty string if none matched.
+
+        The generic <p>-tag sweep is the absolute last resort and only
+        runs when all named selectors fail.
+        """
+        for selector in cfg.get("selectors", []):
+            el = soup.select_one(selector)
+            if el:
+                text = el.get_text(separator=" ", strip=True)
+                if len(text) > 100:
+                    return text
+
+        # Last resort: all paragraph tags (original behaviour, now gated)
+        paragraphs = soup.find_all("p")
+        fallback = "\n".join(
+            p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)
+        )
+        return fallback if len(fallback) > 100 else ""
+
+    @staticmethod
+    def _is_paywall_content(text: str, cfg: dict) -> bool:
+        """
+        Return True if *text* contains any paywall marker from *cfg*.
+        Comparison is case-insensitive.
+        """
+        lowered = text.lower()
+        return any(
+            marker.lower() in lowered
+            for marker in cfg.get("paywall_markers", [])
+        )
+
+    # ── RSS fetch ─────────────────────────────────────────────────────────────
+
+    def _fetch_raw(self) -> list[Any]:
+        """Pull and parse the RSS feed. Returns feedparser entry objects."""
+        import requests
+        try:
+            # Reddit requires a descriptive User-Agent; other feeds accept a
+            # browser-like UA.  We send the bot-style header unconditionally -
+            # it works for all feeds and avoids Reddit's 429 rate-limit block.
+            headers = {
+                "User-Agent": "ThreatIntel_Collector_v1.0 (by /u/threat_intel_bot)",
+            }
+            # Bypass SSL verification for Windows environments with missing certs
+            resp = requests.get(self.feed_url, timeout=15, verify=False,
+                                headers=headers)
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
+        except Exception as e:
+            print(f"[!] RSS fetch error: {e}")
+            return []
+        if feed.bozo and not feed.entries:
+            print(f"[!] RSS parse warning: {feed.bozo_exception}")
+        return feed.entries
+
+    # ── Date helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_date(date_str: str) -> datetime | None:
+        """
+        Parse an RSS/Atom date string into a timezone-aware datetime.
+
+        Handles two formats:
+          - RFC-2822: 'Thu, 21 May 2026 00:00:00 +0000' (standard RSS)
+          - ISO-8601: '2026-01-26T01:29:14+00:00'        (Reddit Atom / many Atom feeds)
+
+        Returns None on failure so callers can fall back gracefully.
+        """
+        if not date_str:
+            return None
+        # Try RFC-2822 first (most RSS feeds)
+        try:
+            from email.utils import parsedate_to_datetime
+            return parsedate_to_datetime(date_str)
+        except Exception:
+            pass
+        # Fall back to ISO-8601 (Reddit Atom, other Atom feeds)
+        try:
+            return datetime.fromisoformat(date_str)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _entry_timestamp(date_str: str) -> float:
+        """Parse an RSS/Atom date string to a UTC Unix timestamp. Returns 0.0 on failure."""
+        dt = RSSCollector._parse_date(date_str)
+        return dt.timestamp() if dt else 0.0
+
+    @staticmethod
+    def _entry_year(date_str: str) -> int | None:
+        """Extract the year from an RSS/Atom date string. Returns None on failure."""
+        dt = RSSCollector._parse_date(date_str)
+        return dt.year if dt else None
+______________________
+______________________
+sync_mitre_baseline.py
+*********************
+"""
+FILE: collectors/sync_mitre_baseline.py
+ROLE: Graph Baseline Builder (Phase 0)
+PURPOSE: Downloads MITRE ATT&CK Enterprise data, converts descriptions into 
+vectors, and extracts targeted platforms to build -[:TARGETS]-> graph edges.
+"""
+import requests
+import logging
+from sentence_transformers import SentenceTransformer
+from db.neo4j_manager import GraphConnector
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+MITRE_STIX_URL = "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
+
+def sync_mitre():
+    logger.info("[*] Initializing local embedding model (all-MiniLM-L6-v2)...")
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    graph = GraphConnector()
+    
+    logger.info(f"[*] Fetching MITRE ATT&CK STIX 2.1 feed from {MITRE_STIX_URL}...")
+    response = requests.get(MITRE_STIX_URL)
+    response.raise_for_status()
+    stix_data = response.json()
+    
+    objects = stix_data.get("objects", [])
+    count = 0
+    
+    for obj in objects:
+        if obj.get("type") == "attack-pattern":
+            ext_refs = obj.get("external_references", [])
+            ttp_id = next((ref["external_id"] for ref in ext_refs if ref.get("source_name") == "mitre-attack"), None)
+            
+            if not ttp_id:
+                continue
+                
+            name = obj.get("name", "Unknown")
+            description = obj.get("description", "")
+            
+            # 1. Generate Vector and Merge MITRE node
+            embedding = model.encode(description).tolist()
+            graph.merge_mitre_ttp(ttp_id, name, description, embedding)
+            
+            # 2. Build hard edges to targeted Software/Platforms
+            platforms = obj.get("x_mitre_platforms", [])
+            for platform in platforms:
+                # E.g., Links T1548 -> [TARGETS] -> 'Windows'
+                graph.link_mitre_software(ttp_id, platform.strip().lower())
+                
+            count += 1
+    
+    create_vector_index_if_needed(graph)
+    graph.close()
+    logger.info(f"[+] Successfully embedded {count} MITRE TTPs and mapped target software edges.")
+
+def create_vector_index_if_needed(graph: GraphConnector):
+    """
+    Creates the Neo4j vector index on first run.
+    IF NOT EXISTS makes this safe to re-run on subsequent syncs.
+    Must run AFTER nodes with .embedding properties exist in the graph.
+    """
+    with graph.driver.session() as session:
+        session.run("""
+            CREATE VECTOR INDEX threat_embeddings_index IF NOT EXISTS
+            FOR (n:CVE|MITRE_TTP) ON n.embedding
+            OPTIONS {indexConfig: {
+                `vector.dimensions`: 384,
+                `vector.similarity_function`: 'cosine'
+            }}
+        """)
+    logger.info("[+] Vector index 'threat_embeddings_index' confirmed.")
+
+if __name__ == "__main__":
+    sync_mitre()
+______________________
+______________________
+sync_nvd_baseline.py
+*******************
+"""
+FILE: collectors/sync_nvd_baseline.py
+ROLE: Graph Baseline Builder (Phase 0) — NVD Side
+PURPOSE:
+  1. Fetches CVE data from NVD year-by-year (1999 -> present) and pushes
+     CVE nodes + AFFECTS edges into Neo4j.
+  2. Downloads the CTID (Center for Threat-Informed Defense) public CVE->ATT&CK
+     mapping file and builds hard CVE -[:EXPLOITS_TECHNIQUE]-> MITRE_TTP edges.
+
+WHY CTID?
+  The official NVD API maps CVEs to CWE weakness IDs, NOT to MITRE ATT&CK techniques.
+  CTID publishes and maintains a curated, authoritative JSON mapping of CVE IDs directly
+  to ATT&CK technique IDs (e.g. CVE-2021-44228 -> T1190). This is the most direct and
+  reliable source for building these hard edges without guessing.
+
+CHECKPOINT SYSTEM:
+  Progress is saved to data/nvd_sync_state.json after every successfully completed year.
+  Failed years are recorded separately so they can be retried without redoing
+  everything. On any subsequent run the script automatically skips completed years
+  and can optionally retry only the failed ones.
+
+  State file structure:
+  {
+      "completed_years": [1999, 2000, ...],
+      "failed_years":    { "2003": "NVD timeout", ... },
+      "last_run":        "2026-05-24T10:00:00+00:00"
+  }
+
+RUN ORDER (first-time setup):
+  1. sync_mitre_baseline.py   (builds MITRE_TTP nodes + vector index)
+  2. sync_nvd_baseline.py     (builds CVE nodes + AFFECTS + EXPLOITS_TECHNIQUE edges)
+
+USAGE:
+  python sync_nvd_baseline.py          # normal run  (skips completed, skips failed)
+  python sync_nvd_baseline.py --retry  # retry previously failed years only
+  python sync_nvd_baseline.py --reset  # wipe state and start completely fresh
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import requests
+from datetime import datetime, timezone
+from pathlib import Path
+
+from sentence_transformers import SentenceTransformer
+from db.neo4j_manager import GraphConnector
+from collectors.nvd_collector import NVDCollector
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+CTID_MAPPING_URL = (
+    "https://raw.githubusercontent.com/center-for-threat-informed-defense/"
+    "attack_to_cve/main/data/attack-to-cve.json"
+)
+
+START_YEAR = 1999
+END_YEAR   = datetime.now(timezone.utc).year   # always syncs up to current year
+
+STATE_FILE = Path("data/nvd_sync_state.json")
+
+
+# ── Checkpoint Helpers ────────────────────────────────────────────────────────
+
+def _load_state() -> dict:
+    """Loads progress state from disk. Returns a fresh state if file missing or corrupted."""
+    if STATE_FILE.exists():
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            logger.warning("[!] nvd_sync_state.json corrupted. Starting fresh.")
+
+    return {
+        "completed_years": [],
+        "failed_years":    {},   # { "year": "error message" }
+        "last_run":        None,
+    }
+
+
+def _save_state(state: dict) -> None:
+    """Writes current progress state to disk immediately after each year."""
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=4)
+    logger.info(f"[✓] Checkpoint saved → {STATE_FILE}")
+
+
+def _reset_state() -> dict:
+    """Wipes the state file and returns a blank state."""
+    if STATE_FILE.exists():
+        STATE_FILE.unlink()
+        logger.info("[*] State file wiped. Starting from scratch.")
+    return {
+        "completed_years": [],
+        "failed_years":    {},
+        "last_run":        None,
+    }
+
+
+def _print_state_summary(state: dict) -> None:
+    """Prints a human-readable summary of current progress."""
+    completed = state.get("completed_years", [])
+    failed    = state.get("failed_years", {})
+    last_run  = state.get("last_run", "Never")
+
+    logger.info("─" * 60)
+    logger.info(f"  Last run       : {last_run}")
+    logger.info(f"  Completed years: {len(completed)}  →  {sorted(completed)}")
+    logger.info(f"  Failed years   : {len(failed)}   →  {list(failed.keys())}")
+    logger.info("─" * 60)
+
+
+# ── Phase A: CTID Mapping ─────────────────────────────────────────────────────
+
+def fetch_ctid_mapping() -> dict[str, list[str]]:
+    """
+    Downloads the CTID CVE->ATT&CK mapping JSON and returns:
+        { "CVE-2021-44228": ["T1190", "T1059"], ... }
+
+    CTID JSON is a list of objects each with "technique_id" and "cve_id".
+    We invert it into a CVE-keyed dict for O(1) lookup inside the year loop.
+    """
+    logger.info(f"[*] Fetching CTID CVE->ATT&CK mapping...")
+    response = requests.get(CTID_MAPPING_URL, timeout=30)
+    response.raise_for_status()
+    raw_data = response.json()
+
+    cve_to_ttps: dict[str, list[str]] = {}
+
+    for entry in raw_data:
+        technique_id = entry.get("technique_id", "").strip().upper()
+        cve_id       = entry.get("cve_id", "").strip().upper()
+
+        if not technique_id or not cve_id:
+            continue
+
+        if cve_id not in cve_to_ttps:
+            cve_to_ttps[cve_id] = []
+
+        if technique_id not in cve_to_ttps[cve_id]:
+            cve_to_ttps[cve_id].append(technique_id)
+
+    logger.info(f"[+] CTID mapping loaded: {len(cve_to_ttps)} CVEs have ATT&CK mappings.")
+    return cve_to_ttps
+
+
+# ── Phase B: Per-Year Sync ────────────────────────────────────────────────────
+
+def sync_nvd_year(
+    year: int,
+    collector: NVDCollector,
+    model: SentenceTransformer,
+    graph: GraphConnector,
+    cve_to_ttps: dict[str, list[str]],
+) -> int:
+    """
+    Fetches all CVEs for a single year, embeds descriptions, merges CVE nodes,
+    creates AFFECTS edges to software, and creates EXPLOITS_TECHNIQUE edges
+    to MITRE TTPs via the CTID mapping.
+
+    Raises an exception if the NVD fetch fails — the caller catches this
+    and records it as a failed year in the checkpoint file.
+
+    Returns the count of CVE nodes successfully processed.
+    """
+    logger.info(f"\n[*] Syncing year {year}...")
+    records = collector.fetch_by_time(year=year, max_results=10000)
+
+    if not records:
+        logger.warning(f"[!] No CVE records returned for {year}. Marking as completed.")
+        return 0
+
+    logger.info(f"[-] Processing {len(records)} CVEs for {year}...")
+    count = 0
+
+    for record in records:
+        cve_id      = record["title"]        # NVDCollector always sets title = CVE ID
+        description = record["description"]
+        cvss_score  = record.get("raw", {}).get("cvss_score")
+
+        # 1. Embed description and merge CVE node
+        embedding = model.encode(description).tolist()
+        graph.merge_cve(
+            cve_id=cve_id,
+            description=description,
+            cvss_score=cvss_score,
+            embedding=embedding,
+        )
+
+        # 2. AFFECTS edges to known software (from CPE data in raw field)
+        affected_software = record.get("raw", {}).get("affected_software", [])
+        for software_name in affected_software:
+            if software_name:
+                graph.link_cve_software(
+                    cve_id=cve_id,
+                    software_name=software_name.strip().lower(),
+                )
+
+        # 3. EXPLOITS_TECHNIQUE edges via CTID mapping
+        #    Silently skips if the TTP node doesn't exist yet in Neo4j
+        #    (sync_mitre_baseline.py must have run first)
+        ttps = cve_to_ttps.get(cve_id.upper(), [])
+        for ttp_id in ttps:
+            graph.link_cve_mitre(cve_id=cve_id, ttp_id=ttp_id)
+
+        count += 1
+
+    logger.info(f"[+] Year {year} done: {count} CVE nodes merged.")
+    return count
+
+
+# ── Main Orchestrator ─────────────────────────────────────────────────────────
+
+def sync_nvd(retry_failed: bool = False) -> None:
+    """
+    Orchestrates the full year-by-year NVD sync with checkpoint support.
+
+    Args:
+        retry_failed : if True, only process years that previously failed.
+                       if False, process all years that are not yet completed.
+    """
+    state = _load_state()
+    _print_state_summary(state)
+
+    completed = set(state["completed_years"])
+    failed    = state["failed_years"]          # { "year_str": "error" }
+
+    # Decide which years to process this run
+    if retry_failed:
+        years_to_process = [int(y) for y in failed.keys()]
+        if not years_to_process:
+            logger.info("[*] No failed years to retry. Exiting.")
+            return
+        logger.info(f"[*] Retry mode — targeting {len(years_to_process)} failed years: {sorted(years_to_process)}")
+    else:
+        all_years        = list(range(START_YEAR, END_YEAR + 1))
+        years_to_process = [y for y in all_years if y not in completed]
+        logger.info(f"[*] Normal mode — {len(years_to_process)} years remaining out of {len(all_years)} total.")
+
+    if not years_to_process:
+        logger.info("[+] All years already completed. Nothing to do.")
+        return
+
+    # Initialize shared resources once — reused across all years
+    logger.info("[*] Initializing embedding model (all-MiniLM-L6-v2)...")
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+
+    logger.info("[*] Connecting to Neo4j...")
+    graph = GraphConnector()
+
+    logger.info("[*] Initializing NVD collector...")
+    collector = NVDCollector()
+
+    # Fetch CTID mapping once — used for all years
+    cve_to_ttps = fetch_ctid_mapping()
+
+    state["last_run"] = datetime.now(timezone.utc).isoformat()
+    total = 0
+
+    for year in sorted(years_to_process):
+        try:
+            count = sync_nvd_year(
+                year=year,
+                collector=collector,
+                model=model,
+                graph=graph,
+                cve_to_ttps=cve_to_ttps,
+            )
+            total += count
+
+            # ── SUCCESS: mark completed, remove from failed if it was there ──
+            if year not in state["completed_years"]:
+                state["completed_years"].append(year)
+
+            if str(year) in state["failed_years"]:
+                del state["failed_years"][str(year)]
+                logger.info(f"[+] Year {year} previously failed — now resolved.")
+
+        except KeyboardInterrupt:
+            # User pressed Ctrl+C — save state and exit cleanly
+            logger.warning(f"\n[!] Interrupted during year {year}. Saving checkpoint...")
+            _save_state(state)
+            logger.info("[!] Progress saved. Re-run the script to continue from where you left off.")
+            graph.close()
+            return
+
+        except Exception as e:
+            # ── FAILURE: record the year and error, continue to next year ──
+            error_msg = str(e)
+            state["failed_years"][str(year)] = error_msg
+            logger.error(f"[!] Year {year} FAILED: {error_msg}")
+            logger.error(f"[!] Recorded in failed_years. Continuing to next year...")
+
+        finally:
+            # Save checkpoint after every year regardless of success or failure
+            _save_state(state)
+
+    graph.close()
+
+    # ── Final summary ──────────────────────────────────────────────────────────
+    logger.info("\n" + "=" * 60)
+    logger.info(f"  NVD sync session complete.")
+    logger.info(f"  CVE nodes processed this run : {total}")
+    logger.info(f"  Total completed years        : {len(state['completed_years'])}")
+    logger.info(f"  Years still failing          : {list(state['failed_years'].keys())}")
+    if state["failed_years"]:
+        logger.info("  → Re-run with --retry to attempt failed years again.")
+    logger.info("=" * 60)
+
+
+# ── CLI Entry Point ───────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="NVD Baseline Sync (1999 → present)")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--retry",
+        action="store_true",
+        help="Retry only previously failed years",
+    )
+    group.add_argument(
+        "--reset",
+        action="store_true",
+        help="Wipe all checkpoint state and start completely fresh",
+    )
+    args = parser.parse_args()
+
+    if args.reset:
+        state = _reset_state()
+
+    sync_nvd(retry_failed=args.retry)
