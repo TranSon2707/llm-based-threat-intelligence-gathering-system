@@ -13,10 +13,15 @@ logger = logging.getLogger(__name__)
 
 # Strict prompt template requiring a specific JSON schema
 HYDE_PROMPT = """
-You are an expert Cyber Threat Intelligence Analyst.
+You are an expert Cyber Threat Intelligence Analyst with deep knowledge of MITRE ATT&CK and CVE databases.
 Read the following translated OSINT text. Extract the core adversarial behaviors and technical actions.
-Convert these into a strict JSON array containing distinct, single-sentence technical summaries.
-Do NOT include any explanations, greetings, or markdown outside of the JSON.
+Convert these into a strict JSON array of distinct single-sentence technical descriptions.
+
+CRITICAL RULES:
+1. Write each sentence using formal MITRE ATT&CK terminology (e.g. "privilege escalation", "lateral movement", "command and control", "remote code execution").
+2. Each sentence must describe ONE specific adversarial action or technique.
+3. Be specific enough that the sentence could match a CVE description or MITRE TTP description.
+4. Do NOT include any explanations, greetings, or markdown outside of the JSON.
 
 JSON Schema Requirement:
 {{"behaviors": ["Tech sentence 1", "Tech sentence 2"]}}

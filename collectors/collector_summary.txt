@@ -1624,7 +1624,7 @@ def fetch_ctid_mapping() -> dict[str, list[str]]:
     cve_to_ttps: dict[str, list[str]] = {}
 
     # Parse CSV from response text
-    reader = csv.DictReader(io.StringIO(response.text))
+    reader = csv.DictReader(io.StringIO(response.content.decode('utf-8-sig')))
 
     # Technique columns to check — covers all mapping types in the CSV
     technique_columns = [
@@ -1641,9 +1641,15 @@ def fetch_ctid_mapping() -> dict[str, list[str]]:
 
         ttps = []
         for col in technique_columns:
-            val = row.get(col, "").strip().upper()
-            if val and val.startswith("T") and val not in ttps:
-                ttps.append(val)
+            cell = row.get(col, "").strip()
+            if not cell:
+                continue
+            # Each cell may contain multiple technique IDs separated by "; "
+            # e.g. "T1190; T1078" or "T1499.004"
+            for part in cell.split(";"):
+                val = part.strip().upper()
+                if val and val.startswith("T") and val not in ttps:
+                    ttps.append(val)
 
         if ttps:
             if cve_id not in cve_to_ttps:
