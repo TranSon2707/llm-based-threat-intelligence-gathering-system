@@ -12,7 +12,7 @@ COMMAND: python -m unittest tests.07_test_extract_and_store
 import unittest
 import sqlite3
 import os
-from db.db import init_db, DB_PATH
+from db.sqlite_manager import init_db, DB_PATH
 from enrichment.entity_extractor import extract_and_store
 from enrichment.ner_spacy import extract_and_store_ner
 

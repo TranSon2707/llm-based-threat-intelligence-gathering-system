@@ -8,7 +8,7 @@ COMMAND: python -m tests.02_test_language_detector
 """
 import time
 import json
-from llm.language_detector import LanguageDetector
+from preprocessor.language_detector import LanguageDetector
 
 def run_test():
     print("="*60)

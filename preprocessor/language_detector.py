@@ -4,7 +4,7 @@ from typing import Any
 from langdetect import detect, DetectorFactory
 
 # Import centralized LLM client from the shared module to ensure consistent configuration and error handling across all components. 
-from ollama_client import get_llm 
+from llm.ollama_client import get_llm 
 
 # Enforce consistent language detection results across runs
 DetectorFactory.seed = 0
@@ -72,19 +72,3 @@ class LanguageDetector:
         except Exception as e:
             print(f"    [!] LangChain translation request failed: {e}")
             return ""
-
-# ---- Quick Test Block ----
-if __name__ == "__main__":
-    detector = LanguageDetector()
-    
-    mock_russian_record = {
-        "title": "Foxconn пострадала от Nitrogen",
-        "description": "Тайваньский гигант Foxconn подвергся кибератаке. Злоумышленники использовали вредоносное ПО Nitrogen для получения доступа. CVE-2024-21111 не подтвержден.",
-        "url": "https://xakep.ru/mock-test",
-        "raw": {}
-    }
-    
-    processed = detector.process_record(mock_russian_record)
-    print("\n[+] OUTPUT PIPELINE RESULT:")
-    print(f"Title: {processed['title']}")
-    print(f"Translated Description:\n{processed['description']}")

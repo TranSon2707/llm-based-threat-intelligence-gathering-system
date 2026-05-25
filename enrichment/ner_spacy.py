@@ -32,7 +32,7 @@ import spacy
 from spacy.language import Language
 from spacy.pipeline import EntityRuler
 
-from db.queries import insert_entity
+from db.sqlite_manager import insert_entity
 
 logger = logging.getLogger(__name__)
 
@@ -185,13 +185,14 @@ def extract_ner_entities(text: str) -> list[NEREntity]:
             continue
 
         if raw_label == "PERSON":
-            # --- FILTER FALSE POSITIVES ---
-            # Take the token immediately preceding the PERSON entity (if any) to check for safe titles
-            prev_token = doc[ent.start - 1].text.lower() if ent.start > 0 else ""
-            
-            # If the previous token is a common safe title, skip this entity to reduce false positives
-            if prev_token in SAFE_TITLES:
-                continue
+            # Check the 3 tokens before the entity, stripping punctuation, to catch
+            # "Dr. Jane", "Senior Researcher John", etc.
+            preceding = [
+                doc[i].text.lower().strip(".")
+                for i in range(max(0, ent.start - 3), ent.start)
+            ]
+            if any(tok in SAFE_TITLES for tok in preceding):
+                continue  # skip this PERSON entity as it's likely a safe title, not a threat actor
             
             etype = "THREAT_ACTOR"
         elif raw_label == "MALWARE":

@@ -11,8 +11,7 @@ COMMAND: python -m unittest tests.02_test_db
 """
 import os
 import unittest
-from db.db import init_db, DB_PATH
-from db.queries import insert_raw_item, get_unprocessed_batch, mark_processed
+from db.sqlite_manager import init_db, DB_PATH, insert_raw_item, get_unprocessed_batch, mark_processed
 
 class TestDatabaseLogic(unittest.TestCase):
     @classmethod

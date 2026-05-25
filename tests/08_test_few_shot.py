@@ -9,7 +9,7 @@ COMMAND: python -m unittest tests.08_test_few_shot
 =============================================================================
 """
 import unittest
-from enrichment.few_shot_examples import FEW_SHOT_EXAMPLES, EXAMPLE_PROMPT
+from docs.few_shot_examples import FEW_SHOT_EXAMPLES, EXAMPLE_PROMPT
 
 class TestFewShot(unittest.TestCase):
     def test_examples_integrity(self):

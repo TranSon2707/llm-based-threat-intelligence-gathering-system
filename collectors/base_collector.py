@@ -7,7 +7,7 @@ import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
-from db import queries
+from db.sqlite_manager import insert_raw_item
 
 class BaseCollector(ABC):
     """
@@ -110,8 +110,17 @@ class BaseCollector(ABC):
         # --- Phase 1: Legacy SQLite Path ---
         for record in records:
             try:
-                # ALL SQLite logic is strictly delegated to queries.py
-                queries.upsert_raw_item(record, db_path)
+                data_tuple = (
+                    record["source"],
+                    record["title"],
+                    record["description"],
+                    record["source_url"],
+                    record["published_date"],
+                    record["collected_at"],
+                    str(record.get("raw", {})),   # stored as string per schema
+                    record["dedup_key"],
+            )
+                insert_raw_item(data_tuple)
                 inserted += 1
             except Exception as e:
                 print(f"[!] Database error on insert: {e}")

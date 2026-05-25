@@ -3,7 +3,7 @@
 import argparse
 import sys
 from pathlib import Path
-from db.db import DB_PATH, init_db
+from db.sqlite_manager import DB_PATH, init_db
 from cli.formatter import print_header, print_status
 
 def cmd_collect(args):
@@ -37,9 +37,9 @@ def cmd_preprocess(args):
 def cmd_enrich(args):
     print_header("ENRICH")
     from enrichment.entity_extractor import extract_entities
-    from enrichment.attack_mapper import map_ttps
+    from docs.attack_mapper import map_ttps
     from db.queries                  import insert_entity
-    from db.db                       import get_db_connection
+    from db.sqlite_manager                       import get_db_connection
 
     with get_db_connection() as conn:
         rows = conn.execute(
@@ -58,7 +58,7 @@ def cmd_enrich(args):
 def cmd_report(args):
     print_header("GENERATE REPORTS")
     from reports.report_generator import generate_analyst_summary
-    from db.db                       import get_db_connection
+    from db.sqlite_manager                       import get_db_connection
     from db.queries                  import insert_report
 
     with get_db_connection() as conn:

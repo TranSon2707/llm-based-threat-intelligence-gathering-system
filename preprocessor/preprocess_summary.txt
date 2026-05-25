@@ -1,0 +1,276 @@
+// add all files in collector to feed for AI instead of feed each file separately
+______________________
+______________________
+html_stripper.py
+****************
+"""
+DESCRIPTION:
+This file securely removes HTML formatting from raw threat intelligence data, extracting readable text and preserving relevant URLs for analysis, 
+while mitigating evasion techniques.
+
+- Overrides Python's `html.parser.HTMLParser` to ignore content within noisy or dangerous tags (<script>, <style>, <noscript>, <iframe>, <svg>) 
+and formats hyperlink URLs into text brackets `[http...]`.
+- Strips the HTML tags (in `strip_html`) *before* unescaping HTML entities (like &lt; or &gt;) to ensure malicious encoded scripts 
+aren't accidentally rendered into executable prompt instructions.
+
+EXAMPLE RESULT:
+Input: "<p>Malware <script>alert(1)</script> found at <a href='http://evil.com'>this link</a>.</p>"
+Output: "Malware found at [http://evil.com] ."
+"""
+
+
+import html
+import unittest
+from html.parser import HTMLParser
+
+class HTMLStripper(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.reset() 
+        self.text_data = []
+        self.ignore_tags = {'script', 'style', 'noscript', 'iframe', 'svg'}
+        self.skip_current = False
+        self.inside_pre = False
+
+    def handle_starttag(self, tag, attrs):
+        """Ignore content inside certain tags and track <pre> for preserving whitespace."""
+        if tag in self.ignore_tags:
+            self.skip_current = True
+            
+        if tag in ('pre', 'code'):
+            self.inside_pre = True
+            
+        if tag == 'a' and not self.skip_current:
+            for attr, value in attrs:
+                if attr == 'href' and value.startswith('http'):
+                    self.text_data.append((f" [{value}] ", False))
+
+    def handle_endtag(self, tag):
+        """Reset skip flag when exiting ignored tags and track exiting <pre>."""
+        if tag in self.ignore_tags:
+            self.skip_current = False
+            
+        if tag in ('pre', 'code'):
+            self.inside_pre = False
+
+    def handle_data(self, data):
+        """Collect text data if not inside ignored tags, preserving whitespace for <pre>."""
+        if not self.skip_current:
+            self.text_data.append((data, self.inside_pre))
+
+    def get_clean_text(self):
+        result = []
+        for text, is_pre in self.text_data:
+            if is_pre:
+                result.append(text)
+            else:
+                cleaned = ' '.join(text.split())
+                if cleaned:
+                    result.append(cleaned)
+        return ' '.join(result).strip()
+
+def strip_html(raw_html: str) -> str:
+    if not raw_html or not isinstance(raw_html, str):
+        return ""
+    
+    try:
+        #decoded_html = html.unescape(raw_html)
+        #stripper = HTMLStripper()
+        #stripper.feed(decoded_html)
+        #return stripper.get_clean_text()
+    
+        # UPDATE: To prevent LLM prompt injection, we must first strip HTML tags before unescaping entities.
+        # STEP 1: Strip actual HTML tags first
+        stripper = HTMLStripper()
+        stripper.feed(raw_html)
+        clean_text = stripper.get_clean_text()
+        
+        # STEP 2: Unescape entities ONLY AFTER stripping
+        # This turns &lt;script&gt; into text that the LLM can read
+        return html.unescape(clean_text)
+        
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        return raw_html
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+______________________
+______________________
+language_detector.py
+********************
+from __future__ import annotations
+
+from typing import Any
+from langdetect import detect, DetectorFactory
+
+# Import centralized LLM client from the shared module to ensure consistent configuration and error handling across all components. 
+from llm.ollama_client import get_llm 
+
+# Enforce consistent language detection results across runs
+DetectorFactory.seed = 0
+
+class LanguageDetector:
+    """
+    Preprocessing module for the Threat Intelligence Pipeline.
+    Detects input language and translates non-English text to English using 
+    the centralized LangChain Ollama client, preserving technical entities.
+    """
+
+    def __init__(self) -> None:
+        # Initialize the LLM once using the centralized client
+        self.llm = get_llm()
+        
+        # System prompt explicitly designed for Cyber Threat Intelligence.
+        self.system_prompt = (
+            "You are a professional Cyber Threat Intelligence translator.\n"
+            "Translate the following technical text into fluent English.\n"
+            "CRITICAL RULES:\n"
+            "1. Preserve all CVE IDs (e.g., CVE-2024-1234), IP addresses, URLs, domains, and MD5/SHA hashes EXACTLY as they are.\n"
+            "2. Keep specific malware families or threat actor names verbatim (e.g., 'Cobalt Strike', 'APT28', 'Nitrogen').\n"
+            "3. Do not add any conversational filler, meta-commentary, or introductory remarks. Output ONLY the raw translated text."
+        )
+
+    def process_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        """
+        Processes a single record from a Collector.
+        Translates the 'description' field to English if necessary.
+        """
+        text_to_check = record.get("description", "")
+        if not text_to_check.strip():
+            return record
+
+        try:
+            # 1. Fast, offline language detection
+            detected_lang = detect(text_to_check)
+            
+            if detected_lang == "en":
+                return record
+
+            print(f"[*] Detected non-English text ({detected_lang}) for: '{record.get('title')}' -> Triggering Translation...")
+            
+            # 2. Trigger translation via the centralized LangChain LLM
+            translated_text = self._translate_via_llama(text_to_check)
+            
+            if translated_text:
+                record["description"] = translated_text
+                record.setdefault("raw", {})["original_language"] = detected_lang
+
+        except Exception as e:
+            print(f"[!] LanguageDetector error on item '{record.get('title')}': {e}")
+        
+        return record
+
+    def _translate_via_llama(self, text: str) -> str:
+        """Hits the centralized LLM client to perform the translation."""
+        # LangChain automatically handles formatting this string into the correct prompt structure
+        prompt = f"{self.system_prompt}\n\nText to translate:\n{text}"
+        
+        try:
+            # Use LangChain's invoke method instead of raw requests.post
+            response = self.llm.invoke(prompt)
+            return response.strip()
+        except Exception as e:
+            print(f"    [!] LangChain translation request failed: {e}")
+            return ""
+______________________
+______________________
+encapsulator.py
+***************
+"""
+=============================================================================
+FILE: preprocessor/encapsulator.py
+ROLE: Prompt Injection Defense Mechanism
+=============================================================================
+PURPOSE:
+Defends the LLM from executing malicious commands embedded in raw threat data.
+It wraps the sanitized text in strict XML tags and provides a rigid system 
+instruction to treat the content purely as passive data.
+"""
+import unittest
+
+def encapsulate_threat_data(sanitized_text: str) -> str:
+    """
+    Wraps the cleaned text inside <THREAT_DATA> tags.
+    """
+    if not sanitized_text:
+        return "<THREAT_DATA></THREAT_DATA>"
+    return f"<THREAT_DATA>\n{sanitized_text}\n</THREAT_DATA>"
+______________________
+______________________
+pipeline.py
+***********
+"""
+FILE: preprocessor/pipeline.py
+ROLE: Data Sanitization Orchestrator
+PURPOSE: Retrieves raw records from the database, sanitizes HTML, detects/translates 
+language, encapsulates the text for prompt injection defense, and marks items as processed. 
+NO LLM INFERENCE OCCURS HERE. The sanitized data is passed to the Enrichment layer.
+"""
+import logging
+import sys
+
+# Import the 3 core preprocessing components
+from preprocessor.html_stripper import strip_html
+from preprocessor.language_detector import LanguageDetector
+from preprocessor.encapsulator import encapsulate_threat_data
+
+# Corrected import: DB manager functions live in sqlite_manager.py
+try:
+    from db.sqlite_manager import get_unprocessed_batch, mark_processed
+except ImportError as e:
+    print(f"Database import failed: {e}")
+    sys.exit(1)
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+def run_preprocessing_batch(batch_size: int = 10) -> list:
+    """
+    Executes the preprocessing pipeline for a specific batch size.
+    Returns a list of dictionaries containing the sanitized items.
+    """
+    logger.info(f"[*] Waking up Preprocessor. Fetching batch of {batch_size}...")
+    
+    # Initialize the Language Detector (Component 2)
+    translator = LanguageDetector()
+    
+    # Step 1: Pulls a new raw_text batch from the SQLite database
+    raw_items = get_unprocessed_batch(limit=batch_size)
+    processed_items = []
+    
+    for item in raw_items:
+        # Extract the raw text (fallback to empty string if missing)
+        raw_text = item.get('description') or ""
+        
+        try:
+            # Step 2: Clean HTML from the description field
+            item['description'] = strip_html(raw_text)
+            
+            # Step 3: process_record() detects language on item['description']
+            # and translates it in-place if non-English
+            item = translator.process_record(item)
+            
+            # Step 4: Encapsulate the now-clean, English description
+            secured_string = encapsulate_threat_data(item['description'])
+            
+            item['processed_text'] = secured_string
+            # Sanity-check: downstream enrichment must use processed_text, not description
+            assert item['processed_text'].startswith("<THREAT_DATA>"), (
+                f"Encapsulation failed for item ID {item['id']} — "
+                "pass item['processed_text'] to the enrichment layer, not item['description']"
+            )
+            processed_items.append(item)
+            
+            mark_processed(item['id'])
+            logger.info(f"[+] Successfully processed item ID: {item['id']}")
+            
+        except Exception as e:
+            logger.error(f"[-] Failed to process item ID: {item['id']}. Error: {e}")
+            continue
+            
+    return processed_items
+
+if __name__ == "__main__":
+    # Test execution
+    run_preprocessing_batch(5)

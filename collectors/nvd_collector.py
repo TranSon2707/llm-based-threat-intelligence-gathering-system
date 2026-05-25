@@ -150,12 +150,14 @@ class NVDCollector(BaseCollector):
             if not cve_id:
                 continue
 
-            description              = self._extract_english_description(
-                                           cve.get("descriptions", []))
-            published                = cve.get("published", "")
-            url                      = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+            description                    = self._extract_english_description(
+                                                cve.get("descriptions", []))
+            published                      = cve.get("published", "")
+            url                            = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
             cvss_score, cvss_sev, cvss_vec = self._extract_cvss(cve.get("metrics", {}))
-            cwes                     = self._extract_cwes(cve.get("weaknesses", []))
+            cwes                           = self._extract_cwes(cve.get("weaknesses", []))
+            affected_software              = self._extract_affected_software(
+                                                cve.get("configurations", []))
 
             records.append(self.format_record(
                 title          = cve_id,
@@ -163,10 +165,11 @@ class NVDCollector(BaseCollector):
                 url            = url,
                 published_date = published,
                 raw            = {
-                    "cvss_score":    cvss_score,
-                    "cvss_severity": cvss_sev,
-                    "cvss_vector":   cvss_vec,
-                    "cwes":          cwes,
+                    "cvss_score":         cvss_score,
+                    "cvss_severity":      cvss_sev,
+                    "cvss_vector":        cvss_vec,
+                    "cwes":               cwes,
+                    "affected_software":  affected_software,   # ← NEW
                 },
             ))
         return records
@@ -259,3 +262,43 @@ class NVDCollector(BaseCollector):
             for d in w.get("description", [])
             if d.get("value", "").startswith("CWE-")
         ]
+    
+    @staticmethod
+    def _extract_affected_software(configurations: list[dict]) -> list[str]:
+        """
+        Parses CPE strings from NVD configurations to extract affected product names.
+
+        CPE format: cpe:2.3:<type>:<vendor>:<product>:<version>:...
+        We extract '<vendor>_<product>' as a clean readable software name.
+        e.g. 'cpe:2.3:a:apache:log4j:2.14.1:...' → 'apache_log4j'
+
+        Only includes application (type='a') and OS (type='o') CPEs.
+        Skips hardware CPEs (type='h') as they are not relevant for the graph.
+        """
+        software_names: set[str] = set()
+
+        for config in configurations:
+            # Configurations can have nested nodes
+            for node in config.get("nodes", []):
+                for cpe_match in node.get("cpeMatch", []):
+                    if not cpe_match.get("vulnerable", False):
+                        continue
+
+                    cpe_str = cpe_match.get("criteria", "")
+                    parts   = cpe_str.split(":")
+
+                    # CPE 2.3 format: cpe:2.3:type:vendor:product:version:...
+                    if len(parts) < 5:
+                        continue
+
+                    cpe_type = parts[2]   # 'a' = application, 'o' = OS, 'h' = hardware
+                    vendor   = parts[3]
+                    product  = parts[4]
+
+                    if cpe_type not in ("a", "o"):
+                        continue
+
+                    if vendor and product and vendor != "*" and product != "*":
+                        software_names.add(f"{vendor}_{product}")
+
+        return list(software_names)
