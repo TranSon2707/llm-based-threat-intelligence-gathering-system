@@ -367,7 +367,7 @@ class GraphConnector:
     # Active Enrichment (Read Operations)
     # ---------------------------------------------------------
     
-    def vector_search(self, post_vector: list, threshold: float = 0.80, top_k: int = 3) -> list:
+    def vector_search(self, post_vector: list, threshold: float = 0.90, top_k: int = 3) -> list:
         """
         Runs two separate searches — one for CVEs, one for MITRE TTPs —
         so TTPs are never crowded out by the much larger CVE node pool.
