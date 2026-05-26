@@ -1,11 +1,11 @@
 """
 =============================================================================
-MODULE: test_entity_extractor.py
+MODULE: 07_test_entity_extractor.py
 PURPOSE: Tests Regex-based extraction of technical IOCs.
 HOW IT TESTS:
 Runs a sample text containing CVEs, IPs, and Hashes through 'extract_entities'
 and verifies that each entity type is correctly identified and deduplicated.
-COMMAND: python -m unittest tests.05_test_entity_extractor
+COMMAND: python -m unittest tests.07_test_entity_extractor
 =============================================================================
 """
 import unittest

@@ -1,11 +1,11 @@
 """ 
 =============================================================================
-MODULE: test_ner_spacy.py
+MODULE: 08_test_ner_spacy.py
 PURPOSE: Validates Named Entity Recognition (NER) for Actors and Malware.
 HOW IT TESTS:
 Processes a complex text containing multiple APT groups, aliases, and malware 
 families. Prints the extracted entities to verify the spaCy EntityRuler config.
-COMMAND: python -m unittest tests.06_test_ner_spacy
+COMMAND: python -m unittest tests.08_test_ner_spacy
 =============================================================================
 """
 import unittest

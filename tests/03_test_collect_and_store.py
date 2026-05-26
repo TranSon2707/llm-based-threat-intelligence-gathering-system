@@ -1,12 +1,12 @@
 """
 =============================================================================
-MODULE: 03_test_integration.py
+MODULE: 03_test_collect_and_store.py
 PURPOSE: Tests the end-to-end flow from API collection to Database storage.
 HOW IT TESTS:
 1. Uses the RSSCollector to pull live data from a real feed.
 2. Uses 'collect_and_store' to automate the fetch-verify-save cycle.
 3. Asserts that new records are successfully written to the 'raw_items' table.
-COMMAND: python -m unittest tests.03_test_integration
+COMMAND: python -m unittest tests.03_test_collect_and_store
 =============================================================================
 """
 

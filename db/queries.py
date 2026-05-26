@@ -92,24 +92,35 @@ LINK_MITRE_SOFTWARE = """
 """
 
 # Complex Traversal finding direct affects, and multi-hop technique targets
-VECTOR_SEARCH_AND_TRAVERSE = """
+VECTOR_SEARCH_CVE = """
     CALL db.index.vector.queryNodes('threat_embeddings_index', $top_k, $post_vector)
     YIELD node AS matched_threat, score
-    WHERE score >= $threshold
-    
-    // Hop 1: Direct CVE to Software
+    WHERE score >= $threshold AND matched_threat:CVE
+
     OPTIONAL MATCH (matched_threat)-[:AFFECTS]->(s1:Software)
-    
-    // Hop 2: CVE to MITRE to Software
     OPTIONAL MATCH (matched_threat)-[:EXPLOITS_TECHNIQUE]->(t1:MITRE_TTP)-[:TARGETS]->(s2:Software)
-    
-    // Hop 3: If the matched threat IS a MITRE node directly targeting Software
-    OPTIONAL MATCH (matched_threat)-[:TARGETS]->(s3:Software)
-    
-    RETURN 
-        coalesce(matched_threat.cve_id, matched_threat.ttp_id) AS threat_id, 
-        labels(matched_threat)[0] AS threat_type,
-        score AS similarity_score, 
-        collect(DISTINCT s1.name) + collect(DISTINCT s2.name) + collect(DISTINCT s3.name) AS systems_at_risk,
+
+    RETURN
+        matched_threat.cve_id AS threat_id,
+        'CVE' AS threat_type,
+        score AS similarity_score,
+        collect(DISTINCT s1.name) + collect(DISTINCT s2.name) AS systems_at_risk,
         collect(DISTINCT t1.ttp_id) AS explicit_ttps
+    ORDER BY score DESC
+"""
+
+VECTOR_SEARCH_TTP = """
+    CALL db.index.vector.queryNodes('threat_embeddings_index', $top_k, $post_vector)
+    YIELD node AS matched_threat, score
+    WHERE score >= $threshold AND matched_threat:MITRE_TTP
+
+    OPTIONAL MATCH (matched_threat)-[:TARGETS]->(s3:Software)
+
+    RETURN
+        matched_threat.ttp_id AS threat_id,
+        'MITRE_TTP' AS threat_type,
+        score AS similarity_score,
+        collect(DISTINCT s3.name) AS systems_at_risk,
+        [] AS explicit_ttps
+    ORDER BY score DESC
 """

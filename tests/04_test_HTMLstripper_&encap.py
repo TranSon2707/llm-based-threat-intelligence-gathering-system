@@ -1,12 +1,12 @@
 """
 =============================================================================
-MODULE: 04_test_preprocessor.py
+MODULE: 04_test_HTMLstripper_&encap.py
 PURPOSE: Validates HTML stripping and XML security encapsulation logic.
 HOW IT TESTS:
 1. HTMLStripper: Verifies removal of <script>/<style> and URL extraction.
 2. Encapsulator: Ensures threat data is wrapped in <THREAT_DATA> tags 
    and the system prompt contains mandatory security directives.
-COMMAND: python -m unittest tests.04_test_preprocessor
+COMMAND: python -m unittest tests.04_test_HTMLstripper_&encap
 =============================================================================
 """
 import unittest
