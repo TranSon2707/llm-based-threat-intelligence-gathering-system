@@ -139,26 +139,37 @@ LINK_MITRE_SOFTWARE = """
 """
 
 # Complex Traversal finding direct affects, and multi-hop technique targets
-VECTOR_SEARCH_AND_TRAVERSE = """
+VECTOR_SEARCH_CVE = """
     CALL db.index.vector.queryNodes('threat_embeddings_index', $top_k, $post_vector)
     YIELD node AS matched_threat, score
-    WHERE score >= $threshold
-    
-    // Hop 1: Direct CVE to Software
+    WHERE score >= $threshold AND matched_threat:CVE
+
     OPTIONAL MATCH (matched_threat)-[:AFFECTS]->(s1:Software)
-    
-    // Hop 2: CVE to MITRE to Software
     OPTIONAL MATCH (matched_threat)-[:EXPLOITS_TECHNIQUE]->(t1:MITRE_TTP)-[:TARGETS]->(s2:Software)
-    
-    // Hop 3: If the matched threat IS a MITRE node directly targeting Software
-    OPTIONAL MATCH (matched_threat)-[:TARGETS]->(s3:Software)
-    
-    RETURN 
-        coalesce(matched_threat.cve_id, matched_threat.ttp_id) AS threat_id, 
-        labels(matched_threat)[0] AS threat_type,
-        score AS similarity_score, 
-        collect(DISTINCT s1.name) + collect(DISTINCT s2.name) + collect(DISTINCT s3.name) AS systems_at_risk,
+
+    RETURN
+        matched_threat.cve_id AS threat_id,
+        'CVE' AS threat_type,
+        score AS similarity_score,
+        collect(DISTINCT s1.name) + collect(DISTINCT s2.name) AS systems_at_risk,
         collect(DISTINCT t1.ttp_id) AS explicit_ttps
+    ORDER BY score DESC
+"""
+
+VECTOR_SEARCH_TTP = """
+    CALL db.index.vector.queryNodes('threat_embeddings_index', $top_k, $post_vector)
+    YIELD node AS matched_threat, score
+    WHERE score >= $threshold AND matched_threat:MITRE_TTP
+
+    OPTIONAL MATCH (matched_threat)-[:TARGETS]->(s3:Software)
+
+    RETURN
+        matched_threat.ttp_id AS threat_id,
+        'MITRE_TTP' AS threat_type,
+        score AS similarity_score,
+        collect(DISTINCT s3.name) AS systems_at_risk,
+        [] AS explicit_ttps
+    ORDER BY score DESC
 """
 _________________________
 _________________________
@@ -268,7 +279,8 @@ from db.queries import (
     MERGE_MITRE_TTP,
     MERGE_CVE,
     LINK_CVE_SOFTWARE,
-    VECTOR_SEARCH_AND_TRAVERSE,
+    VECTOR_SEARCH_CVE,
+    VECTOR_SEARCH_TTP,
     LINK_CVE_MITRE
 )
 
@@ -355,14 +367,22 @@ class GraphConnector:
     # Active Enrichment (Read Operations)
     # ---------------------------------------------------------
     
-    def vector_search(self, post_vector: list, threshold: float = 0.80, top_k: int = 15) -> list:
+    def vector_search(self, post_vector: list, threshold: float = 0.90, top_k: int = 3) -> list:
         """
-        top_k controls how many candidates are retrieved before threshold filtering.
-        Default 15 gives the threshold room to work without over-fetching.
+        Runs two separate searches — one for CVEs, one for MITRE TTPs —
+        so TTPs are never crowded out by the much larger CVE node pool.
+        top_k=3 per type means at most 6 results total per behavior sentence.
         """
-        return self._execute_read(
-            VECTOR_SEARCH_AND_TRAVERSE,
+        cve_results = self._execute_read(
+            VECTOR_SEARCH_CVE,
             post_vector=post_vector,
             threshold=threshold,
             top_k=top_k,
         )
+        ttp_results = self._execute_read(
+            VECTOR_SEARCH_TTP,
+            post_vector=post_vector,
+            threshold=threshold,
+            top_k=top_k,
+        )
+        return cve_results + ttp_results

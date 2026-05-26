@@ -530,38 +530,54 @@ class KnowledgeEngine:
         for sentence in behaviors:
             vector = self.model.encode(sentence).tolist()
             results = self.graph.vector_search(post_vector=vector, threshold=0.80)
-            
+
             if results:
                 zero_day_flag = False
-                
+
                 for record in results:
-                    # Capture CVE or MITRE ID
-                    threat_id = record.get("threat_id")
-                    if threat_id and threat_id not in matched_threats:
+                    threat_id   = record.get("threat_id")
+                    threat_type = record.get("threat_type")
+                    score       = record.get("similarity_score")
+
+                    if threat_id:
+                        logger.info(f"    [{threat_type}] {threat_id} (score: {score:.4f})")
+
+                    if threat_type == "CVE" and threat_id not in matched_threats:
                         matched_threats.append(threat_id)
-                    
-                    # Capture Explicitly mapped TTPs (if it was a CVE that had a hard edge to MITRE)
+
+                    elif threat_type == "MITRE_TTP" and threat_id not in matched_threats:
+                        matched_threats.append(threat_id)
+                        explicit_techniques.add(threat_id)
+
                     ttps = record.get("explicit_ttps", [])
                     for ttp in ttps:
-                        if ttp: explicit_techniques.add(ttp)
-                        
-                    # Aggregate Blast Radius (Direct AFFECTS + multi-hop TARGETS)
+                        if ttp:
+                            explicit_techniques.add(ttp)
+
                     systems = record.get("systems_at_risk", [])
                     for sys in systems:
-                        if sys: blast_radius.add(sys)
-
+                        if sys:
+                            blast_radius.add(sys)
             else:
                 unmatched_behaviors.append(sentence)
                         
+        matched_cves = [t for t in matched_threats if t.startswith("CVE-")]
+        matched_ttps = [t for t in matched_threats if t.startswith("T")]
+
         payload = {
-            "matched_threats": matched_threats,
-            "techniques": list(explicit_techniques),
-            "systems_at_risk": list(blast_radius),
-            "is_zero_day": zero_day_flag,
+            "matched_cves":        matched_cves,
+            "matched_ttps":        list(matched_ttps),
+            "matched_threats":     matched_threats,      # kept for backward compat
+            "techniques":          list(explicit_techniques),
+            "systems_at_risk":     list(blast_radius),
+            "is_zero_day":         zero_day_flag,
             "unmatched_behaviors": unmatched_behaviors,
         }
-        
-        logger.info(f"[+] Evaluation Complete. Zero-Day: {zero_day_flag}. Matches: {len(matched_threats)}. Systems at risk: {len(blast_radius)}")
+
+        logger.info(f"[+] Matched CVEs : {matched_cves}")
+        logger.info(f"[+] Matched TTPs : {list(matched_ttps)}")
+        logger.info(f"[+] Systems at risk: {list(blast_radius)}")
+        logger.info(f"[+] Zero-Day: {zero_day_flag}")
         return payload
 
     def close(self):
