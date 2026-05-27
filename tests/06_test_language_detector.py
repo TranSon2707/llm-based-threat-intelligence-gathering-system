@@ -1,9 +1,9 @@
 """
 =============================================================================
-MODULE: 02_test_language_detector.py
+MODULE: 06_test_language_detector.py
 PURPOSE: Executes performance and accuracy telemetry on the Language Detector.
 METRICS: Execution time, Translation Accuracy (Entity Preservation).
-COMMAND: python -m tests.02_test_language_detector
+COMMAND: python -m tests.06_test_language_detector
 =============================================================================
 """
 import time

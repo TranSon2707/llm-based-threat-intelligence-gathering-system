@@ -5,7 +5,8 @@ from db.queries import (
     MERGE_MITRE_TTP,
     MERGE_CVE,
     LINK_CVE_SOFTWARE,
-    VECTOR_SEARCH_AND_TRAVERSE,
+    VECTOR_SEARCH_CVE,
+    VECTOR_SEARCH_TTP,
     LINK_CVE_MITRE
 )
 
@@ -92,14 +93,22 @@ class GraphConnector:
     # Active Enrichment (Read Operations)
     # ---------------------------------------------------------
     
-    def vector_search(self, post_vector: list, threshold: float = 0.80, top_k: int = 15) -> list:
+    def vector_search(self, post_vector: list, threshold: float = 0.90, top_k: int = 3) -> list:
         """
-        top_k controls how many candidates are retrieved before threshold filtering.
-        Default 15 gives the threshold room to work without over-fetching.
+        Runs two separate searches — one for CVEs, one for MITRE TTPs —
+        so TTPs are never crowded out by the much larger CVE node pool.
+        top_k=3 per type means at most 6 results total per behavior sentence.
         """
-        return self._execute_read(
-            VECTOR_SEARCH_AND_TRAVERSE,
+        cve_results = self._execute_read(
+            VECTOR_SEARCH_CVE,
             post_vector=post_vector,
             threshold=threshold,
             top_k=top_k,
         )
+        ttp_results = self._execute_read(
+            VECTOR_SEARCH_TTP,
+            post_vector=post_vector,
+            threshold=threshold,
+            top_k=top_k,
+        )
+        return cve_results + ttp_results
