@@ -18,10 +18,18 @@ Read the following translated OSINT text. Extract the core adversarial behaviors
 Convert these into a strict JSON array of distinct single-sentence technical descriptions.
 
 CRITICAL RULES:
-1. Write each sentence using formal MITRE ATT&CK terminology (e.g. "privilege escalation", "lateral movement", "command and control", "remote code execution").
+1. Write each sentence using formal MITRE ATT&CK terminology. Mirror the exact phrasing style
+   used in MITRE ATT&CK technique descriptions. Examples of correct phrasing style:
+   - "Adversary used valid accounts with stolen credentials to maintain persistent access"
+   - "Attacker executed remote code on target system by exploiting a vulnerability in the application"
+   - "Adversary performed data exfiltration over command and control channel using encrypted protocol"
+   - "Attacker moved laterally through the network using compromised credentials and remote services"
+   - "Adversary established persistence by creating scheduled tasks on compromised systems"
 2. Each sentence must describe ONE specific adversarial action or technique.
-3. Be specific enough that the sentence could match a CVE description or MITRE TTP description.
-4. Do NOT include any explanations, greetings, or markdown outside of the JSON.
+3. Avoid incident-specific details like organization names, country names, or dates —
+   focus on the TECHNIQUE, not the victim.
+4. Be specific enough that the sentence could match a MITRE TTP description directly.
+5. Do NOT include any explanations, greetings, or markdown outside of the JSON.
 
 JSON Schema Requirement:
 {{"behaviors": ["Tech sentence 1", "Tech sentence 2"]}}
@@ -32,6 +40,12 @@ Input Text:
 
 def translate_to_behaviors(osint_text: str) -> list:
     """Passes text to Llama 3 and returns a list of technical behavior strings."""
+    
+    # Early return for empty/whitespace input — no point calling the LLM
+    if not osint_text or not osint_text.strip():
+        logger.info("[*] Empty input — skipping LLM call.")
+        return []
+    
     logger.info("[*] Translating OSINT text to technical behaviors via LLM (HyDE)...")
     
     llm = get_llm()
@@ -42,11 +56,28 @@ def translate_to_behaviors(osint_text: str) -> list:
         # Generate LLM response
         response = chain.invoke({"osint_text": osint_text})
         
-        # Clean up possible markdown code blocks surrounding the JSON
+        # Strip markdown fences first
         clean_json_str = response.strip().strip("```json").strip("```").strip()
+        
+        # Strip any natural language preamble before the JSON object
+        # LLMs often add "Here is the output:" before the actual JSON
+        brace_idx = clean_json_str.find("{")
+        if brace_idx > 0:
+            clean_json_str = clean_json_str[brace_idx:]
+        
+        # Also strip any trailing note after the closing brace
+        last_brace_idx = clean_json_str.rfind("}")
+        if last_brace_idx != -1:
+            clean_json_str = clean_json_str[:last_brace_idx + 1]
+        
         data = json.loads(clean_json_str)
         
-        behaviors = data.get("behaviors", [])
+        # Handle both {"behaviors": [...]} and bare [...] responses
+        if isinstance(data, list):
+            behaviors = data
+        else:
+            behaviors = data.get("behaviors", [])
+            
         logger.info(f"[+] Extracted {len(behaviors)} distinct behaviors.")
         return behaviors
         

@@ -62,7 +62,10 @@ class TestBehaviorTranslator(unittest.TestCase):
         behaviors = translate_to_behaviors("")
         print(f"[+] Result for empty input: {behaviors}")
         self.assertIsInstance(behaviors, list,
-            "Empty input should return a list, not raise an exception.")
+            "Empty input should return a list.")
+        self.assertEqual(len(behaviors), 0,
+            "Empty input should return an EMPTY list — not call the LLM.")
+        print("[PASS] Empty input correctly returns [] without calling LLM.")
 
     def test_05_garbage_input_does_not_crash(self):
         print("\n[*] Testing garbage input handling...")
@@ -70,6 +73,12 @@ class TestBehaviorTranslator(unittest.TestCase):
         print(f"[+] Result for garbage input: {behaviors}")
         self.assertIsInstance(behaviors, list,
             "Garbage input should return a list, not raise an exception.")
+        # Garbage input may return [] or a list — both are acceptable
+        # The critical assertion is that it does NOT crash
+        for b in behaviors:
+            self.assertIsInstance(b, str,
+                f"Any returned behavior must be a string, got: {b}")
+        print(f"[PASS] Garbage input handled gracefully — {len(behaviors)} behaviors returned.")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
