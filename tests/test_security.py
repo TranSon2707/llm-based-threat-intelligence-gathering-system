@@ -1,6 +1,6 @@
 """
 =============================================================================
-MODULE: 11_test_security.py
+MODULE: test_security.py
 PURPOSE: Validates the system's resilience against Prompt Injection attacks.
 HOW IT TESTS:
 1. Wraps a malicious payload in <THREAT_DATA> tags.
@@ -9,7 +9,7 @@ HOW IT TESTS:
 4. Asserts the LLM still follows our format rules ([source_id] citation).
 5. Asserts a raw unencapsulated malicious payload is rejected immediately
    before even reaching the LLM (encapsulation guard).
-COMMAND: python -m unittest tests.11_test_security
+COMMAND: python -m unittest tests.test_security
 NOTE: Requires Ollama running locally with llama3 pulled.
 =============================================================================
 """
