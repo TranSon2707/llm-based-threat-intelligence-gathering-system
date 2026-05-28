@@ -17,20 +17,56 @@ class KnowledgeEngine:
         self.graph = GraphConnector()
 
     def evaluate_threat(self, behaviors: list) -> dict:
-        zero_day_flag = True 
+        zero_day_flag = True
         matched_threats = []
         explicit_techniques = set()
         blast_radius = set()
         unmatched_behaviors = []
-        
-        if not behaviors:
-            return {"matched_threats": [], "techniques": [], "systems_at_risk": [], "is_zero_day": zero_day_flag, "unmatched_behaviors": unmatched_behaviors}
 
-        logger.info(f"[*] Querying Neo4j for {len(behaviors)} behaviors (Threshold >= 80%)...")
-        
+        if not behaviors:
+            return {
+                "matched_cves": [], "matched_ttps": [], "matched_threats": [],
+                "techniques": [], "systems_at_risk": [], "is_zero_day": True,
+                "unmatched_behaviors": []
+            }
+
+        logger.info(f"[*] Querying Neo4j for {len(behaviors)} behaviors (Threshold >= 90%)...")
+
+        # ── Combined context search ───────────────────────────────────────────
+        # Embed ALL behaviors together as one paragraph to get a holistic
+        # attack vector — this prevents individual sentences from matching
+        # unrelated CVEs just because they share generic security vocabulary
+        combined_context = " ".join(behaviors)
+        combined_vector  = self.model.encode(combined_context).tolist()
+        context_results  = self.graph.vector_search(
+            post_vector=combined_vector, threshold=0.80
+        )
+
+        # Build a set of threat IDs that appear in the combined context search
+        # Only threats that match the FULL attack context are considered relevant
+        context_relevant_ids: set[str] = set()
+        for record in context_results:
+            tid = record.get("threat_id")
+            if tid:
+                context_relevant_ids.add(tid)
+
+        logger.info(f"[-] Combined context search found {len(context_relevant_ids)} relevant threats.")
+
+        # ── Per-behavior search ───────────────────────────────────────────────
+        # Still search per behavior to detect zero-day and unmatched behaviors
+        # but FILTER results against context_relevant_ids to remove noise
         for sentence in behaviors:
-            vector = self.model.encode(sentence).tolist()
-            results = self.graph.vector_search(post_vector=vector, threshold=0.80)
+            vector  = self.model.encode(sentence).tolist()
+            results = self.graph.vector_search(post_vector=vector, threshold=0.90)
+
+            # Filter: only keep results that also appeared in the combined search
+            # This removes CVEs that match a behavior sentence in isolation but
+            # are not relevant to the overall attack context
+            if context_relevant_ids:
+                results = [
+                    r for r in results
+                    if r.get("threat_id") in context_relevant_ids
+                ]
 
             if results:
                 zero_day_flag = False

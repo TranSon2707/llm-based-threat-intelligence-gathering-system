@@ -38,8 +38,8 @@ def cmd_enrich(args):
     print_header("ENRICH")
     from enrichment.entity_extractor import extract_entities
     from docs.attack_mapper import map_ttps
-    from db.queries                  import insert_entity
-    from db.sqlite_manager                       import get_db_connection
+    from db.queries import insert_entity
+    from db.sqlite_manager import get_db_connection
 
     with get_db_connection() as conn:
         rows = conn.execute(
