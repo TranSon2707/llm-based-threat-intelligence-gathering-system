@@ -16,7 +16,9 @@ class GraphConnector:
     """Manages connection pooling and graph executions for Neo4j."""
     
     # Connects to the local default Neo4j Bolt port
-    def __init__(self, uri="neo4j://localhost:7687", user="neo4j", password="password"):
+    #def __init__(self, uri="neo4j://localhost:7687", user="neo4j", password="password"):
+    # Using bolt:// scheme to avoid deprecation warning in Neo4j 5.x, but it still works with 4.x
+    def __init__(self, uri="bolt://127.0.0.1:7687", user="neo4j", password="password"):
         try:
             self.driver = GraphDatabase.driver(uri, auth=(user, password))
             logger.info("Successfully connected to Neo4j.")

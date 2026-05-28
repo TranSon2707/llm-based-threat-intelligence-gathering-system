@@ -320,7 +320,7 @@ CREATE TABLE ttp_mappings (
 CREATE TABLE reports (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id   INTEGER REFERENCES raw_items(id),
-    content     TEXT NOT NULL,     -- markdown text
+    summary     TEXT NOT NULL,     -- markdown text
     model       TEXT,              -- e.g. 'llama3'
     status      TEXT DEFAULT 'pending',  -- pending | approved | rejected | escalated
     created_at  TEXT DEFAULT (datetime('now'))

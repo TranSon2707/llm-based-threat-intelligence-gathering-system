@@ -39,12 +39,11 @@ python -m spacy download en_core_web_sm
 pip check
 ```
 
-**6. Pull the Local LLM Model for Reasoning and Embedding.**
+**6. Pull the Local LLM Model for Reasoning.**
 
-We use `llama3` for report generation and `nomic-embed-text` for GraphRAG semantic search.
+We use `llama3` for report generation.
 ```bash
 ollama pull llama3
-ollama pull nomic-embed-text
 ```
 
 **7. Install and Run Neo4j via Docker**

@@ -2,6 +2,7 @@
 =============================================================================
 MODULE: 05_test_neo4j.py
 PURPOSE: Validates the Neo4j Knowledge Graph integrity after baseline build.
+REQUIREMENT: Neo4J running
 HOW IT TESTS:
 1. Verifies connection succeeds.
 2. Checks node counts for CVE, MITRE_TTP, Software are non-zero.
