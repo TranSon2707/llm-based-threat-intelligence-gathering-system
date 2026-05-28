@@ -26,8 +26,9 @@ class LanguageDetector:
             "Translate the following technical text into fluent English.\n"
             "CRITICAL RULES:\n"
             "1. Preserve all CVE IDs (e.g., CVE-2024-1234), IP addresses, URLs, domains, and MD5/SHA hashes EXACTLY as they are.\n"
-            "2. Keep specific malware families or threat actor names verbatim (e.g., 'Cobalt Strike', 'APT28', 'Nitrogen').\n"
-            "3. Do not add any conversational filler, meta-commentary, or introductory remarks. Output ONLY the raw translated text."
+            "2. DO NOT INVENT OR ALTER ANY TECHNICAL ENTITIES. DO NOT SUMMARY the DESCRIPTION of a TTP/CVE into TTP/CVE IDs\n"
+            "3. Keep specific malware families or threat actor names verbatim (e.g., 'Cobalt Strike', 'APT28', 'Nitrogen').\n"
+            "4. Do not add any conversational filler, meta-commentary, or introductory remarks. Output ONLY the raw translated text."
         )
 
     def process_record(self, record: dict[str, Any]) -> dict[str, Any]:

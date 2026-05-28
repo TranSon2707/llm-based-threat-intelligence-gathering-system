@@ -239,6 +239,9 @@ class RSSCollector(BaseCollector):
 
         cfg = _domain_cfg(url)
 
+        if cfg.get("paywall_skip"):
+            return rss_summary
+
         try:
             print(f"    [Scraping] {url}")
             resp = requests.get(

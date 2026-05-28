@@ -61,10 +61,10 @@ STRICT RULES:
 5. NO conversational filler. DO NOT introduce yourself. DO NOT say "I am an AI",
    "Here is a summary", or "The provided text appears to be".
 6. NO bolding outside of section headers. Start each section immediately with factual content.
-7. Keep the report under 500 words.
 
 === THREAT DATA (OSINT SOURCE) ===
 {threat_data}
+posted on {post_date}
 
 === EXTRACTED ENTITIES ===
 Threat Actors    : {threat_actors}
@@ -73,52 +73,103 @@ Hard IOCs        : {hard_iocs}
 Target Software  : {target_software}
 
 === KNOWLEDGE GRAPH CONTEXT ===
-Matched CVEs         : {matched_cves}
-Matched MITRE TTPs   : {matched_ttps}
-Systems at Risk      : {systems_at_risk}
-Unmatched Behaviors  : {unmatched_behaviors}
-Zero-Day Flag        : {is_zero_day}
+Matched CVEs             : {matched_cves}
+Vector-Matched TTPs      : {matched_ttps}
+Category-Matched TTPs    : {mapper_ttps}
+Systems at Risk          : {systems_at_risk}
+Unmatched Behaviors      : {unmatched_behaviors}
+Zero-Day Flag            : {is_zero_day}
 
 === REPORT FORMAT (follow exactly, no deviations) ===
 
 ## Threat Overview
-[1-2 sentences summarizing what the threat is and who is behind it. Start immediately with facts.] [source_id: {source_id}]
+[5-7 sentences summarizing what the threat is and who is behind it, details how it operates. Start with the SOURCE LINK, POST DATE {post_date}, and then continue immediately with facts.] [source_id: {source_id}]
 
 ## Indicators of Compromise
-[List the hard IOCs: IPs, domains, hashes, CVE IDs found in the source. One per line.
+[List ALL the "Hard IOCs": IPs, domains, hashes, CVE IDs; TTP IDs; "Malware" hashes; "Threat Actors" found in the source. ONE PER LINE.
 If none, write: "Insufficient data to determine."] [source_id: {source_id}]
 
 ## Targeted Systems
 [List the software and systems explicitly mentioned in the threat report as being attacked.
-Use the Target Software field above. For EACH system write one line:
+Use the "Target Software" field above. For EACH system write ONE LINE:
   - [system name] — [what it is, e.g. "web server", "database", "VPN gateway"]
 If none identified, write: "Insufficient data to determine."
 WARNING: Check if any of these systems exist in your infrastructure.] [source_id: {source_id}]
 
 ## MITRE ATT&CK Mapping
-[List each matched TTP with its ID and what adversarial action it represents.
-If none, write: "Insufficient data to determine."] [source_id: {source_id}]
+[Two sub-sections:
+
+"Vector-Matched TTPs" (high confidence — specific semantic match):
+List each TTP from "Vector-Matched TTPs" with its name and what it means for this attack.
+DO NOT INVENT TECHNIQUES — use only the TTP IDs provided in "Vector-Matched TTPs", 
+DO NOT COPY from "Category-Matched TTPs".
+If none, write: "No specific technique match found."
+
+"Category-Matched TTPs" (broad category — LLM-inferred):
+List each TTP from "Category-Matched TTPs" with its name.
+DO NOT INVENT TECHNIQUES — use only the TTP IDs provideD IN "Category-Matched TTPs".
+Note: "These are broad category matches. The specific attack technique may be novel
+within this category — see Zero-Day Assessment."
+If none, write: "None."] [source_id: {source_id}]
 
 ## Matched Vulnerabilities
-[List each matched CVE and what system it affects.
+[List ALL "Matched CVEs". For EACH ONE explain:
+  - What the CVE is (brief one-line description of the vulnerability or technique)
+  - What system it affects
+  - Why it is relevant — the attack described in this post shares a similar attack
+    pattern with this CVE/TTP, meaning the same attacker techniques could be used
+    to exploit these systems.
 If none, write: "Insufficient data to determine."] [source_id: {source_id}]
 
-## Blast Radius
-[List all systems at risk based on KG graph traversal of matched CVEs and TTPs.
-These are systems known to be affected by the matched vulnerabilities globally.
+## Blast Radius — Potential Impact Assessment
+[List all "Systems at Risk" from KG graph traversal. For EACH system explain:
+  - The system name and WHAT IT IS
+  - HOW it can be affected by the techniques similar to the techniques in the post
+  - MATCHED CVE/ TTP LINKS to it
+  - Begin with a "-"
+
 If none, write: "Insufficient data to determine."
-WARNING: Check if any of these systems exist in your infrastructure.] [source_id: {source_id}]
+
+MUST write in NEW LINE: ⚠️  WARNING: These are systems that known CVEs and TTPs affect globally. The attacker
+described in this post used similar techniques and could leverage the same attack
+vectors against these systems in your environment.] [source_id: {source_id}]
 
 ## Zero-Day Assessment
-[State whether any behaviors were unmatched in the knowledge graph.
-If is_zero_day is True, flag this as a potential novel or zero-day technique and list
-unmatched behaviors explicitly. Relate them to the Targeted Systems if possible.
-If is_zero_day is False, confirm all behaviors were mapped to known threats.] [source_id: {source_id}]
+[Use ONLY the "Zero-Day Flag" and "Unmatched Behaviors" fields from the KNOWLEDGE GRAPH CONTEXT above.
+Do NOT INVENT OR INFER behaviors from the threat data.
+
+If Zero-Day Flag is YES:
+  Write this EXACT warning first:
+  "⚠ WARNING: This report describes a NEW or PREVIOUSLY UNSEEN attack technique.
+  The behaviors in this threat report could NOT be matched to any known CVE or MITRE ATT&CK
+  technique in the knowledge graph. This may indicate a zero-day vulnerability, a novel
+  attack method, or an emerging threat not yet catalogued in official databases.
+  ANALYST REVIEW IS RECOMMENDED."
+  Then if Unmatched Behaviors is not empty, list them under "Unmatched behaviors:", ONE LINE EACH.
+  If the threat data EXPLICITLY MENTIONS a named new technique, INCLUDE that name.
+
+If Zero-Day Flag is No BUT Unmatched Behaviors is not empty:
+  Write: "⚠ NOTICE: Although broad TTP categories were matched, the following specific
+  behaviors could NOT be matched to known CVEs or specific techniques in the knowledge graph.
+  These behaviors may represent novel variants or sub-techniques worth investigating:"
+  Then list the unmatched behaviors.
+
+If Zero-Day Flag is No AND Unmatched Behaviors is empty:
+  Write: "All behaviors were successfully mapped to known threats in the knowledge graph."] [source_id: {source_id}]
 
 ## Recommended Actions
-[3-5 concrete mitigation steps. If Targeted Systems were identified, prioritize
-hardening those systems specifically. If CVEs matched, include patching instructions.
-If zero-day, recommend enhanced monitoring and isolation of affected systems.] [source_id: {source_id}]
+[Provide 3-5 SPECIFIC mitigation steps directly tied to THIS threat.
+Be specific — name the actual attack technique, affected system, or CVE.
+Do NOT give generic advice like "implement MFA" or "conduct security audits" unless
+directly relevant to the specific attack described.
+
+Structure:
+1. If Targeted Systems identified → specific hardening steps for those exact systems
+2. If CVEs matched → specific patch instructions for those CVE IDs
+3. If Category-Matched TTPs found → specific mitigations for those TTP categories
+   (e.g. for T1190: patch internet-facing applications, for T1078: enforce MFA on all accounts)
+4. If unmatched behaviors exist → specific monitoring rules for those exact behaviors
+5. If a named new technique is described → specific detection/prevention for that technique] [source_id: {source_id}]
 """
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -158,6 +209,38 @@ def _format_entities(entities_list: list[dict]) -> tuple[str, str, str, str]:
 def _format_list(items: list) -> str:
     """Formats a list for prompt injection — comma-joined or 'None' if empty."""
     return ", ".join(str(i) for i in items) if items else "None"
+
+import json
+from pathlib import Path
+
+# Load TTP name lookup once at module load
+_TTP_NAMES: dict[str, str] = {}
+
+def _load_ttp_names() -> dict[str, str]:
+    """Loads TTP ID -> name mapping from enterprise-attack.json."""
+    stix_path = Path("enterprise-attack.json")
+    if not stix_path.exists():
+        return {}
+    try:
+        with open(stix_path, "r", encoding="utf-8") as f:
+            stix_data = json.load(f)
+        names = {}
+        for obj in stix_data.get("objects", []):
+            if obj.get("type") != "attack-pattern":
+                continue
+            if obj.get("x_mitre_deprecated") or obj.get("revoked"):
+                continue
+            for ref in obj.get("external_references", []):
+                if ref.get("source_name") == "mitre-attack":
+                    ttp_id = ref.get("external_id", "").strip().upper()
+                    if ttp_id:
+                        names[ttp_id] = obj.get("name", "Unknown")
+        return names
+    except Exception as e:
+        logger.warning(f"[!] Failed to load TTP names: {e}")
+        return {}
+
+_TTP_NAMES = _load_ttp_names()
 
 
 # ── Main Entry Point ──────────────────────────────────────────────────────────
@@ -205,22 +288,43 @@ def generate_analyst_summary(
         kg_payload.get("matched_cves") or
         [t for t in kg_payload.get("matched_threats", []) if t.startswith("CVE-")]
     )
-    matched_ttps = _format_list(
-        kg_payload.get("matched_ttps") or
-        kg_payload.get("techniques", [])
-    )
+
+    for ioc in hard_iocs.split(", "):
+        if ioc.startswith("CVE-"): 
+            if ioc and ioc not in matched_cves:
+                matched_cves += f", {ioc}" if matched_cves != "None identified" else ioc
+
+    raw_ttps = kg_payload.get("matched_ttps")
+    for ioc in hard_iocs.split(", "):
+        if ioc.startswith("T") and ioc not in raw_ttps:
+            raw_ttps += f", {ioc}" if raw_ttps != "None identified" else ioc
+            
+    # Format using real MITRE names
+    matched_ttps = ", ".join(
+        f"{t} ({_TTP_NAMES.get(t, 'Unknown technique')})"
+        for t in raw_ttps
+    ) if raw_ttps else "None"
+
+    mapper_ttps = _format_list(kg_payload.get("mapper_ttps", []))
+
     systems_at_risk     = _format_list(kg_payload.get("systems_at_risk", []))
     unmatched_behaviors = _format_list(kg_payload.get("unmatched_behaviors", []))
     is_zero_day         = "YES — potential novel/zero-day technique detected" \
                           if kg_payload.get("is_zero_day") else "No"
+    
+    from db.sqlite_manager import get_post_date
+    post_date = get_post_date(source_id)
 
     # ── 4. Build and invoke LLM chain ─────────────────────────────────────────
-    llm    = get_llm()
+    # Report generation needs more tokens than other LLM tasks —
+    # the prompt is large (threat data + entities + KG context) and
+    # the output needs ~1500 tokens for a complete structured report
+    llm = get_llm(num_ctx=12288, num_predict=4096)
     prompt = PromptTemplate(
         input_variables=[
             "source_id", "threat_data", "threat_actors", "malware",
             "hard_iocs", "target_software", "matched_cves", "matched_ttps",
-            "systems_at_risk", "unmatched_behaviors", "is_zero_day",
+            "mapper_ttps", "systems_at_risk", "unmatched_behaviors", "is_zero_day", "post_date"
         ],
         template=RAG_PROMPT,
     )
@@ -236,9 +340,11 @@ def generate_analyst_summary(
             "target_software":     target_software,
             "matched_cves":        matched_cves,
             "matched_ttps":        matched_ttps,
+            "mapper_ttps":         mapper_ttps,
             "systems_at_risk":     systems_at_risk,
             "unmatched_behaviors": unmatched_behaviors,
             "is_zero_day":         is_zero_day,
+            "post_date":           post_date
         })
         report = report.strip()
         logger.info(f"[+] Report generated successfully for source_id={source_id}.")

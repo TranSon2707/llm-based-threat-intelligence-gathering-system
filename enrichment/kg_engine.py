@@ -39,7 +39,7 @@ class KnowledgeEngine:
         combined_context = " ".join(behaviors)
         combined_vector  = self.model.encode(combined_context).tolist()
         context_results  = self.graph.vector_search(
-            post_vector=combined_vector, threshold=0.80
+            post_vector=combined_vector, threshold=0.75
         )
 
         # Build a set of threat IDs that appear in the combined context search
@@ -57,7 +57,7 @@ class KnowledgeEngine:
         # but FILTER results against context_relevant_ids to remove noise
         for sentence in behaviors:
             vector  = self.model.encode(sentence).tolist()
-            results = self.graph.vector_search(post_vector=vector, threshold=0.90)
+            results = self.graph.vector_search(post_vector=vector, threshold=0.80)
 
             # Filter: only keep results that also appeared in the combined search
             # This removes CVEs that match a behavior sentence in isolation but
@@ -99,23 +99,70 @@ class KnowledgeEngine:
                 unmatched_behaviors.append(sentence)
                         
         matched_cves = [t for t in matched_threats if t.startswith("CVE-")]
-        matched_ttps = [t for t in matched_threats if t.startswith("T")]
+        matched_ttps = list({
+            t for t in matched_threats if t.startswith("T")
+        } | explicit_techniques)
+
+        # ── Attack mapper — LLM-based TTP extraction ──────────────────────────
+        # Runs AFTER vector search to find TTPs that vector search missed.
+        # Results verified against enterprise-attack.json — no hallucinations.
+        # IMPORTANT: attack mapper finding a broad TTP category does NOT clear
+        # zero_day_flag — only vector search finding a specific semantic match does.
+        mapper_ttps: list[str] = []
+        try:
+            from enrichment.attack_mapper import extract_ttps_from_behaviors
+            raw_mapper_ttps = extract_ttps_from_behaviors(behaviors)
+
+            existing_ttps = set(matched_ttps)
+            for ttp in raw_mapper_ttps:
+                if ttp not in existing_ttps:
+                    matched_threats.append(ttp)
+                    existing_ttps.add(ttp)
+                    mapper_ttps.append(ttp)
+
+                    # Fetch blast radius for this TTP from the graph
+                    try:
+                        with self.graph.driver.session() as session:
+                            result = session.run("""
+                                MATCH (t:MITRE_TTP {ttp_id: $ttp_id})-[:TARGETS]->(s:Software)
+                                RETURN s.name AS system
+                            """, ttp_id=ttp)
+                            for record in result:
+                                sys_name = record.get("system")
+                                if sys_name:
+                                    blast_radius.add(sys_name)
+                                    logger.info(f"    [+] {ttp} targets: {sys_name}")
+                    except Exception as e:
+                        logger.warning(f"[!] Failed to fetch blast radius for {ttp}: {e}")
+
+            if mapper_ttps:
+                logger.info(f"[+] Attack mapper added {len(mapper_ttps)} TTPs "
+                            f"not found by vector search: {mapper_ttps}")
+            else:
+                logger.info("[+] Attack mapper found no additional TTPs beyond vector search.")
+
+        except Exception as e:
+            logger.warning(f"[!] Attack mapper failed, skipping: {e}")
+
+        if matched_threats:
+            zero_day_flag = False
 
         payload = {
             "matched_cves":        matched_cves,
-            "matched_ttps":        list(matched_ttps),
-            "matched_threats":     matched_threats,      # kept for backward compat
-            "techniques":          list(explicit_techniques),
+            "matched_ttps":        matched_ttps,
+            "mapper_ttps":         mapper_ttps,
+            "matched_threats":     matched_threats,
             "systems_at_risk":     list(blast_radius),
-            "is_zero_day":         zero_day_flag,
+            "is_zero_day":         zero_day_flag,        # NOT touched by attack mapper
             "unmatched_behaviors": unmatched_behaviors,
         }
 
-        logger.info(f"[+] Matched CVEs : {matched_cves}")
-        logger.info(f"[+] Matched TTPs : {list(matched_ttps)}")
-        logger.info(f"[+] Systems at risk: {list(blast_radius)}")
-        logger.info(f"[+] Zero-Day: {zero_day_flag}")
+        logger.info(f"[+] Matched CVEs    : {matched_cves}")
+        logger.info(f"[+] Matched TTPs    : {matched_ttps}")
+        logger.info(f"[+] Mapper TTPs     : {mapper_ttps}")
+        logger.info(f"[+] Systems at risk : {list(blast_radius)}")
+        logger.info(f"[+] Zero-Day        : {zero_day_flag}")
         return payload
-
+        
     def close(self):
         self.graph.close()

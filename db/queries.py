@@ -12,6 +12,9 @@ INSERT_RAW_ITEM = """
     (source, title, description, source_url, published_date, collected_at, raw, dedup_key) 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 """
+GET_POST_DATE = """
+    SELECT published_date FROM raw_items
+    WHERE id = ?;"""
 
 # Used by pipeline.py to fetch uncleaned records
 GET_UNPROCESSED_BATCH = """
