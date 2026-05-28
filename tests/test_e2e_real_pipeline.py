@@ -56,7 +56,7 @@ def _neo4j_available() -> bool:
 
 def _internet_available() -> bool:
     try:
-        requests.get("https://www.reddit.com", timeout=5)
+        requests.get("https://xakep.ru/category/news/feed/", timeout=5)
         return True
     except Exception:
         return False
@@ -94,17 +94,19 @@ class TestE2ERealPipeline(unittest.TestCase):
 
     def test_01_collect_from_rss(self):
         print("\n" + "="*60)
-        print("[STAGE 1] RSS Collection — reddit_netsec")
+        print("[STAGE 1] RSS Collection — xakep.ru (Russian)") 
         print("="*60)
 
         from collectors.rss_collector import RSSCollector, KNOWN_FEEDS
+        
+
         collector = RSSCollector(
-            feed_url=KNOWN_FEEDS["reddit_netsec"],
-            source_name="reddit_netsec"
+            feed_url=KNOWN_FEEDS["xakep"],
+            source_name="xakep"
         )
         records = collector.fetch_by_time(days_back=7, max_results=5)
 
-        print(f"[+] Fetched {len(records)} records from reddit_netsec")
+        print(f"[+] Fetched {len(records)} records from xakep.ru")
         for r in records:
             print(f"    - {r['title'][:80]}")
 

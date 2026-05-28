@@ -43,6 +43,8 @@ _RE_CVE = re.compile(
     re.IGNORECASE,
 )
 
+_RE_TTP = re.compile(r'^T\d{4}(\.\d{3})?$')
+
 # IPv4: four octets 0-255, word-boundary anchored
 _RE_IPV4 = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}"
@@ -297,6 +299,10 @@ def extract_entities(text: str) -> list[ExtractedEntity]:
     # CVEs
     for match in _RE_CVE.finditer(text):
         _add("CVE", match.group().upper())
+
+    # TTPS
+    for match in _RE_TTP.finditer(text):
+        _add("TTP", match.group().upper())
 
     # IPv6 before IPv4 to avoid partial matches
     for match in _RE_IPV6.finditer(text):

@@ -70,6 +70,15 @@ def translate_to_behaviors(osint_text: str) -> list:
         if last_brace_idx != -1:
             clean_json_str = clean_json_str[:last_brace_idx + 1]
         
+        # Repair common LLM JSON formatting error: missing commas between array items
+        # e.g. ["item1"\n"item2"] -> ["item1",\n"item2"]
+        import re as _re
+        clean_json_str = _re.sub(
+            r'"\s*\n\s*"',
+            '",\n"',
+            clean_json_str
+        )
+
         data = json.loads(clean_json_str)
         
         # Handle both {"behaviors": [...]} and bare [...] responses

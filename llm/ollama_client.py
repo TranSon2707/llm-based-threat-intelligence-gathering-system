@@ -14,14 +14,20 @@ the local Llama 3 AI running via Ollama.
 # UPDATED: Use the new dedicated langchain_ollama package
 from langchain_ollama import OllamaLLM
 
-def get_llm():
+def get_llm(num_ctx: int = 4096, num_predict: int = 2048):
     """
     Create and return a LangChain wrapper for the local Llama 3 model.
-    Requirement: Temperature = 0 to ensure deterministic outputs for factual tasks,
-    preventing the model from 'hallucinating' or being overly creative.
+
+    Args:
+        num_ctx     : context window size (input tokens). Default 4096.
+                      Increase to 8192 if input prompts are very long.
+        num_predict : max tokens to generate (output tokens). Default 2048.
+                      Report generator needs ~1500 tokens for a full report.
     """
     return OllamaLLM(
         model="llama3",
-        base_url="http://localhost:11434", 
-        temperature=0 
+        base_url="http://localhost:11434",
+        temperature=0,
+        num_ctx=num_ctx,
+        num_predict=num_predict,
     )

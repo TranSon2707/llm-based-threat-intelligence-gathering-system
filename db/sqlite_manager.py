@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from contextlib import contextmanager
 from db.queries import (
+    GET_POST_DATE,
     INSERT_RAW_ITEM, 
     GET_UNPROCESSED_BATCH, 
     MARK_PROCESSED, 
@@ -57,6 +58,13 @@ def insert_raw_item(data: tuple) -> int:
         )
         row = cursor2.fetchone()
         return row["id"] if row else 0
+    
+def get_post_date(item_id: int) -> str:
+    """Fetches the published date of a raw item by its ID."""
+    with get_db_connection() as conn:
+        cursor = conn.execute(GET_POST_DATE, (item_id,))
+        row = cursor.fetchone()
+        return row["published_date"] if row else "Unknown"
 
 def get_unprocessed_batch(limit: int = 10) -> list:
     """Fetches raw records for the preprocessing pipeline to sanitize."""
