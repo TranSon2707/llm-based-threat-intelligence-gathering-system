@@ -28,10 +28,19 @@ NOTES:
   - Runtime: 2-5 minutes depending on LLM speed
 =============================================================================
 """
-import os
 import unittest
 import requests
 import logging
+import warnings
+warnings.filterwarnings("ignore", category=ResourceWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+# Suppress INFO/DEBUG logs from noisy libraries
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("neo4j").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)   # if httpx is used under the hood
+
+
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -177,7 +186,7 @@ class TestE2ERealPipeline(unittest.TestCase):
         translator = LanguageDetector()
         item = translator.process_record(item)
         print(f"[+] Language processed. Description preview: "
-              f"'{item['description'][:100]}...'")
+              f"'{item['description']}...'")
 
         # Step 3 — Encapsulate
         secured = encapsulate_threat_data(item["description"])
@@ -286,8 +295,10 @@ class TestE2ERealPipeline(unittest.TestCase):
 
         self.assertIn("is_zero_day", kg_payload,
             "KG payload missing is_zero_day flag.")
-        self.assertIn("matched_threats", kg_payload,
-            "KG payload missing matched_threats.")
+        self.assertIn("matched_cves", kg_payload,
+            "KG payload missing matched_cves.")
+        self.assertIn("matched_ttps", kg_payload,
+            "KG payload missing matched_ttps.")
         self.assertIn("systems_at_risk", kg_payload,
             "KG payload missing systems_at_risk.")
         self.assertIn("unmatched_behaviors", kg_payload,

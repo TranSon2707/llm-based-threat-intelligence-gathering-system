@@ -4,9 +4,11 @@ from pathlib import Path
 from contextlib import contextmanager
 from db.queries import (
     GET_POST_DATE,
+    GET_SOURCE_URL,
     INSERT_RAW_ITEM, 
     GET_UNPROCESSED_BATCH, 
     MARK_PROCESSED, 
+    REMARK_PROCESSED,
     INSERT_ENTITY, 
     INSERT_REPORT,
     GET_ENTITIES_BY_SOURCE,
@@ -65,6 +67,13 @@ def get_post_date(item_id: int) -> str:
         cursor = conn.execute(GET_POST_DATE, (item_id,))
         row = cursor.fetchone()
         return row["published_date"] if row else "Unknown"
+    
+def get_source_url(item_id: int) -> str:
+    """Fetches the source URL of a raw item by its ID."""
+    with get_db_connection() as conn:
+        cursor = conn.execute(GET_SOURCE_URL, (item_id,))
+        row = cursor.fetchone()
+        return row["source_url"] if row else "Unknown"
 
 def get_unprocessed_batch(limit: int = 10) -> list:
     """Fetches raw records for the preprocessing pipeline to sanitize."""
@@ -76,6 +85,11 @@ def mark_processed(item_id: int):
     """Flags a raw item as securely sanitized and ready for enrichment."""
     with get_db_connection() as conn:
         conn.execute(MARK_PROCESSED, (item_id,))
+
+def remark_processed(item_id: int):
+    """Resets the processed status of a raw item."""
+    with get_db_connection() as conn:
+        conn.execute(REMARK_PROCESSED, (item_id,))
 
 def insert_entity(source_id: int, entity_type: str, entity_value: str):
     """Stores hard IOCs or soft entities extracted via regex/spaCy."""
@@ -99,3 +113,8 @@ def get_report(source_id: int) -> dict:
         cursor = conn.execute(GET_REPORT, (source_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
+    
+if __name__ == "__main__":
+    """Initializes the database when this module is run directly."""
+    remark_processed(5)
+    print("Processed status reset for item ID 4.")  # Example: reset processed status for item ID 4 for testing

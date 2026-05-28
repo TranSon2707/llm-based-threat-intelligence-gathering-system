@@ -6,6 +6,7 @@ OSINT text and output a strict JSON array of single-sentence technical behaviors
 """
 import json
 import logging
+import re
 from llm.ollama_client import get_llm
 from langchain_core.prompts import PromptTemplate
 
@@ -26,10 +27,11 @@ CRITICAL RULES:
    - "Attacker moved laterally through the network using compromised credentials and remote services"
    - "Adversary established persistence by creating scheduled tasks on compromised systems"
 2. Each sentence must describe ONE specific adversarial action or technique.
-3. Avoid incident-specific details like organization names, country names, or dates —
-   focus on the TECHNIQUE, not the victim.
+3. Avoid incident-specific details like organization names, country names, or dates — focus on the TECHNIQUE, not the victim.
 4. Be specific enough that the sentence could match a MITRE TTP description directly.
 5. Do NOT include any explanations, greetings, or markdown outside of the JSON.
+6. Do NOT prepend TTP IDs (e.g. "T1059:") to behavior sentences. Write only the
+   plain technical sentence without any TTP ID prefix.
 
 JSON Schema Requirement:
 {{"behaviors": ["Tech sentence 1", "Tech sentence 2"]}}
@@ -48,7 +50,7 @@ def translate_to_behaviors(osint_text: str) -> list:
     
     logger.info("[*] Translating OSINT text to technical behaviors via LLM (HyDE)...")
     
-    llm = get_llm()
+    llm = get_llm(model="behavior_extraction", num_ctx=8192, num_predict=2048)
     prompt = PromptTemplate(input_variables=["osint_text"], template=HYDE_PROMPT)
     chain = prompt | llm
     
@@ -86,7 +88,16 @@ def translate_to_behaviors(osint_text: str) -> list:
             behaviors = data
         else:
             behaviors = data.get("behaviors", [])
-            
+
+        # Strip TTP ID prefixes the LLM sometimes prepends (e.g. "T1059: Adversary...")
+        import re as _re
+        _TTP_PREFIX = _re.compile(r'^T\d{4}(?:\.\d{3})?:\s*', re.IGNORECASE)
+        behaviors = [
+            _TTP_PREFIX.sub("", b).strip()
+            for b in behaviors
+            if isinstance(b, str) and b.strip()
+        ]
+
         logger.info(f"[+] Extracted {len(behaviors)} distinct behaviors.")
         return behaviors
         

@@ -7,7 +7,9 @@ from db.queries import (
     LINK_CVE_SOFTWARE,
     VECTOR_SEARCH_CVE,
     VECTOR_SEARCH_TTP,
-    LINK_CVE_MITRE
+    LINK_CVE_MITRE,
+    GET_TTP_IDS,
+    GET_CVE_IDS
 )
 
 logger = logging.getLogger(__name__)
@@ -112,3 +114,17 @@ class GraphConnector:
             top_k=top_k,
         )
         return cve_results + ttp_results
+    
+    #---------------------------------------------------------
+    # Searching TTPs and CVEs by ID
+    #---------------------------------------------------------
+
+    def get_ttp_by_id(self, ttp_id: str) -> dict:
+        """Fetches a MITRE TTP node by its TTP ID."""
+        results = self._execute_read(GET_TTP_IDS, ttp_id=ttp_id)
+        return results
+    
+    def get_cve_by_id(self, cve_id: str) -> dict:
+        """Fetches a CVE node by its CVE ID."""
+        results = self._execute_read(GET_CVE_IDS, cve_id=cve_id)
+        return results

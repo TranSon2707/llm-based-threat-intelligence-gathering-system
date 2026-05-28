@@ -16,6 +16,10 @@ GET_POST_DATE = """
     SELECT published_date FROM raw_items
     WHERE id = ?;"""
 
+GET_SOURCE_URL = """
+    SELECT source_url FROM raw_items    
+    WHERE id = ?;"""
+
 # Used by pipeline.py to fetch uncleaned records
 GET_UNPROCESSED_BATCH = """
     SELECT * FROM raw_items 
@@ -27,6 +31,12 @@ GET_UNPROCESSED_BATCH = """
 MARK_PROCESSED = """
     UPDATE raw_items 
     SET processed = 1 
+    WHERE id = ?;
+"""
+# Resets processed status to 0 for a given item ID — used when re-running the pipeline on a specific record after making improvements to the enrichment logic.
+REMARK_PROCESSED = """
+    UPDATE raw_items 
+    SET processed = 0
     WHERE id = ?;
 """
 
@@ -126,4 +136,16 @@ VECTOR_SEARCH_TTP = """
         collect(DISTINCT s3.name) AS systems_at_risk,
         [] AS explicit_ttps
     ORDER BY score DESC
+"""
+
+# find TTP IDs to check against hallucinated TTPs from attack mapper
+GET_TTP_IDS = """
+    MATCH (t:MITRE_TTP {ttp_id: $ttp_id})
+    RETURN t.name, t.ttp_id
+"""
+
+# find CVE descriptions to check against hallucinated CVEs from attack mapper
+GET_CVE_IDS = """
+    MATCH (c:CVE {cve_id: $cve_id})
+    RETURN c.description, c.cve_id
 """
