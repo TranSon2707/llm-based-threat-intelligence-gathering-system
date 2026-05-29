@@ -80,7 +80,7 @@ class KnowledgeEngine:
             # Extract CVEs from behavior sentences using the attack mapper
             cve = extract_cve_from_behaviors(behaviors)
             if cve:
-                matched_cves.extend(cve)
+                matched_cves.append(cve)
                 try:
                     with self.graph.driver.session() as session:
                         result = session.run("""
@@ -92,7 +92,6 @@ class KnowledgeEngine:
                             if sys_name:
                                 blast_radius.add(sys_name)
                                 logger.info(f"    [+] {cve} exploits: {sys_name}")
-                    self.graph.close()  # Close graph connection after use
                 except Exception as e:
                     logger.warning(f"[!] Failed to fetch blast radius for {cve}: {e}")
 

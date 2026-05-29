@@ -26,7 +26,7 @@ def sync_mitre():
     logger.info(f"[*] Fetching MITRE ATT&CK STIX 2.1 feed from {MITRE_STIX_URL}...")
     response = requests.get(MITRE_STIX_URL)
     response.raise_for_status()
-    stix_data = response.json()
+    stix_data = response.json() 
     
     objects = stix_data.get("objects", [])
     count = 0
@@ -47,10 +47,11 @@ def sync_mitre():
             graph.merge_mitre_ttp(ttp_id, name, description, embedding)
             
             # 2. Build hard edges to targeted Software/Platforms
-            platforms = obj.get("x_mitre_platforms", [])
-            for platform in platforms:
-                # E.g., Links T1548 -> [TARGETS] -> 'Windows'
-                graph.link_mitre_software(ttp_id, platform.strip().lower())
+            if obj.get("x_mitre_platforms"):
+                platforms = obj.get("x_mitre_platforms", [])
+                for platform in platforms:
+                    # E.g., Links T1548 -> [TARGETS] -> 'Windows'
+                    graph.link_mitre_software(ttp_id, platform.strip().lower())
                 
             count += 1
     

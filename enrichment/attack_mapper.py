@@ -67,7 +67,7 @@ CRITICAL RULES:
 5, 1 CVE ONLY — the most relevant one.
 
 JSON Schema:
-{{"cves": ["CVE-20xy-1234"]}}
+{{"cve": ["CVE-20xy-1234"]}}
 
 Behaviors to analyze:
 {behaviors}
