@@ -71,10 +71,10 @@ def get_llm(model: str, num_ctx: int = 4096, num_predict: int = 2048):
       try:
          r = requests.get("http://localhost:11434/api/tags", timeout=3)
          models = [m["name"] for m in r.json().get("models", [])]
-         if any("phi" in m for m in models):
-            logger.info(f"[*] Using phi3:14b for {model} tasks.")
+         if any("llama3" in m for m in models):
+            logger.info(f"[*] Using llama3 for {model} tasks.")
             return OllamaLLM(
-               model="phi3:14b",
+               model="llama3",
                base_url="http://localhost:11434",
                temperature=0,
                num_ctx=num_ctx,

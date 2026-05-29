@@ -287,12 +287,6 @@ class TestE2ERealPipeline(unittest.TestCase):
         kg_payload = engine.evaluate_threat(behaviors)
         engine.close()
 
-        print(f"[+] Matched CVEs       : {kg_payload.get('matched_cves', [])}")
-        print(f"[+] Matched TTPs       : {kg_payload.get('matched_ttps', [])}")
-        print(f"[+] Systems at risk    : {kg_payload.get('systems_at_risk', [])}")
-        print(f"[+] Is zero-day        : {kg_payload['is_zero_day']}")
-        print(f"[+] Unmatched behaviors: {kg_payload.get('unmatched_behaviors', [])}")
-
         self.assertIn("is_zero_day", kg_payload,
             "KG payload missing is_zero_day flag.")
         self.assertIn("matched_cves", kg_payload,
