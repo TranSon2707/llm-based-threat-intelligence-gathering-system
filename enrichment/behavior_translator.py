@@ -32,7 +32,8 @@ CRITICAL RULES:
 5. If the text has no adversarial behaviors (e.g., it's a patch announcement with no attack description),
    return an empty list: {{"behaviors": []}}
 6. Output ONLY a valid JSON object. No preamble, no explanation, no markdown fences.
-7. Do NOT prepend TTP IDs to sentences.
+7. Do NOT prepend TTP IDs (e.g. "T1059:") to behavior sentences. Write only the
+   plain technical sentence without any TTP ID prefix.
 
 JSON format:
 {{"behaviors": ["sentence 1", "sentence 2"]}}
@@ -51,6 +52,7 @@ def translate_to_behaviors(osint_text: str) -> list:
 
     # Chunking: if text is too long (> 4000 characters), process it in chunks to avoid context limits
     # and improve the quality of behavior extraction from long Reddit posts/articles.
+    
     MAX_CHUNK_SIZE = 4000
     if len(osint_text) > MAX_CHUNK_SIZE:
         logger.info(f"[*] Input text too large ({len(osint_text)} chars) — splitting into chunks.")
@@ -64,7 +66,7 @@ def translate_to_behaviors(osint_text: str) -> list:
     logger.info("[*] Translating OSINT text to technical behaviors via LLM (HyDE)...")
 
     # Prefer translation-optimized models if available
-    llm = get_llm(model="translation", num_ctx=8192, num_predict=2048)
+    llm = get_llm(model="behavior_extraction", num_ctx=8192, num_predict=2048)
     prompt = PromptTemplate(input_variables=["osint_text"], template=HYDE_PROMPT)
     chain = prompt | llm
     
