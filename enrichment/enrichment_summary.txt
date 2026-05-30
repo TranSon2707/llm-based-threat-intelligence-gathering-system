@@ -1,8 +1,3 @@
-// summary all files in this module
-______________________
-______________________
-entity_extractor.py
-*******************
 """
 enrichment/entity_extractor.py
 ================================
@@ -47,6 +42,8 @@ _RE_CVE = re.compile(
     r"\bCVE-(?:19|20)\d{2}-\d{4,}\b",
     re.IGNORECASE,
 )
+
+_RE_TTP = re.compile(r'^T\d{4}(\.\d{3})?$')
 
 # IPv4: four octets 0-255, word-boundary anchored
 _RE_IPV4 = re.compile(
@@ -303,6 +300,10 @@ def extract_entities(text: str) -> list[ExtractedEntity]:
     for match in _RE_CVE.finditer(text):
         _add("CVE", match.group().upper())
 
+    # TTPS
+    for match in _RE_TTP.finditer(text):
+        _add("TTP", match.group().upper())
+
     # IPv6 before IPv4 to avoid partial matches
     for match in _RE_IPV6.finditer(text):
         _add("IPv6", match.group())
@@ -378,11 +379,7 @@ def extract_and_store(source_id: int, cleaned_text: str) -> list[ExtractedEntity
         len(system_entities),
     )
     return entities
-
-______________________
-______________________
-ner_spacy.py
-************
+===================================================================================
 """
 enrichment/ner_spacy.py
 ========================
@@ -622,10 +619,8 @@ def extract_and_store_ner(source_id: int, cleaned_text: str) -> list[NEREntity]:
         source_id, len(entities),
     )
     return entities
-______________________
-______________________
-behavior_translator.py
-**********************
+
+================================================================================
 """
 FILE: enrichment/behavior_translator.py
 ROLE: Semantic Translation (Phase 3)
@@ -634,6 +629,7 @@ OSINT text and output a strict JSON array of single-sentence technical behaviors
 """
 import json
 import logging
+import re
 from llm.ollama_client import get_llm
 from langchain_core.prompts import PromptTemplate
 
@@ -654,10 +650,11 @@ CRITICAL RULES:
    - "Attacker moved laterally through the network using compromised credentials and remote services"
    - "Adversary established persistence by creating scheduled tasks on compromised systems"
 2. Each sentence must describe ONE specific adversarial action or technique.
-3. Avoid incident-specific details like organization names, country names, or dates —
-   focus on the TECHNIQUE, not the victim.
+3. Avoid incident-specific details like organization names, country names, or dates — focus on the TECHNIQUE, not the victim.
 4. Be specific enough that the sentence could match a MITRE TTP description directly.
 5. Do NOT include any explanations, greetings, or markdown outside of the JSON.
+6. Do NOT prepend TTP IDs (e.g. "T1059:") to behavior sentences. Write only the
+   plain technical sentence without any TTP ID prefix.
 
 JSON Schema Requirement:
 {{"behaviors": ["Tech sentence 1", "Tech sentence 2"]}}
@@ -676,7 +673,7 @@ def translate_to_behaviors(osint_text: str) -> list:
     
     logger.info("[*] Translating OSINT text to technical behaviors via LLM (HyDE)...")
     
-    llm = get_llm()
+    llm = get_llm(model="behavior_extraction", num_ctx=8192, num_predict=2048)
     prompt = PromptTemplate(input_variables=["osint_text"], template=HYDE_PROMPT)
     chain = prompt | llm
     
@@ -698,6 +695,15 @@ def translate_to_behaviors(osint_text: str) -> list:
         if last_brace_idx != -1:
             clean_json_str = clean_json_str[:last_brace_idx + 1]
         
+        # Repair common LLM JSON formatting error: missing commas between array items
+        # e.g. ["item1"\n"item2"] -> ["item1",\n"item2"]
+        import re as _re
+        clean_json_str = _re.sub(
+            r'"\s*\n\s*"',
+            '",\n"',
+            clean_json_str
+        )
+
         data = json.loads(clean_json_str)
         
         # Handle both {"behaviors": [...]} and bare [...] responses
@@ -705,7 +711,16 @@ def translate_to_behaviors(osint_text: str) -> list:
             behaviors = data
         else:
             behaviors = data.get("behaviors", [])
-            
+
+        # Strip TTP ID prefixes the LLM sometimes prepends (e.g. "T1059: Adversary...")
+        import re as _re
+        _TTP_PREFIX = _re.compile(r'^T\d{4}(?:\.\d{3})?:\s*', re.IGNORECASE)
+        behaviors = [
+            _TTP_PREFIX.sub("", b).strip()
+            for b in behaviors
+            if isinstance(b, str) and b.strip()
+        ]
+
         logger.info(f"[+] Extracted {len(behaviors)} distinct behaviors.")
         return behaviors
         
@@ -715,10 +730,236 @@ def translate_to_behaviors(osint_text: str) -> list:
     except Exception as e:
         logger.error(f"[-] Behavior translation failed: {e}")
         return []
-______________________
-______________________
-kg_engine.py
-***********
+================================================================================================
+"""
+FILE: enrichment/attack_mapper.py
+ROLE: LLM-based TTP/CVE Extractor with graph database verification
+PURPOSE:
+  Uses the LLM to directly extract MITRE ATT&CK/CVE IDs from
+  behavior sentences, then verifies each extracted ID against the
+  graph database to eliminate hallucinated IDs.
+
+  Runs in parallel with kg_engine — results are merged into kg_payload
+  before report generation so the final report has both vector-matched
+  and LLM-extracted TTPs, CVEs.
+"""
+import re
+import json
+import logging
+from pathlib import Path
+from langchain_core.prompts import PromptTemplate
+from llm.ollama_client import get_llm
+from db.neo4j_manager import GraphConnector
+import warnings
+warnings.filterwarnings("ignore", category=ResourceWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+# Suppress INFO/DEBUG logs from noisy libraries
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("neo4j").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)   # if httpx is used under the hood
+
+
+logger = logging.getLogger(__name__)
+
+# ── Regex for basic TTP format validation ─────────────────────────────────────
+
+_TTP_PATTERN = re.compile(r'^T\d{4}(\.\d{3})?$')
+_CVE_PATTERN = re.compile(r'^CVE-\d{4}-\d{4,}$')
+
+# ── Prompt ────────────────────────────────────────────────────────────────────
+
+TTP_MAPPER_PROMPT = """
+You are a MITRE ATT&CK expert. Given this following adversarial behavior description,
+identify which MITRE ATT&CK technique IDs (T-codes) best match for this behavior.
+
+CRITICAL RULES:
+1. Only output REAL, VALID MITRE ATT&CK (e.g. T10--, "--" is placeholders for digits).
+2. Do NOT invent technique IDs. If UNSURE, OMIT RATHER THAN GUESS.
+3. If can not find any valid techniques, return an EMPTY list: [].
+4. Output ONLY a JSON object — no preamble, no explanation, no markdown.
+5. Include sub-techniques where relevant (e.g. T10--.001).
+6. Maximum 3 technique IDs.
+
+JSON Schema:
+{{"ttps": ["T----", "T----", "T----"]}}
+
+Behavior to analyze:
+{behavior}
+"""
+
+CVE_MAPPER_PROMPT = """
+You are a cybersecurity expert. Given this following adversarial behaviors description,
+identify which CVE ID best match.
+
+CRITICAL RULES:
+1. Only output 1 REAL, VALID CVE ID (e.g. CVE-20xy-1234).
+2. Do NOT invent CVE IDs. If UNSURE, OMIT RATHER THAN GUESS.
+3. If can not find any valid CVE, return an EMPTY list: [].
+4. Output ONLY a JSON object — NO preamble, NO EXPLANATION, NO MARKDOWN, NO NOTES.
+5, 1 CVE ONLY — the most relevant one.
+
+JSON Schema:
+{{"cve": ["CVE-20xy-1234"]}}
+
+Behaviors to analyze:
+{behaviors}
+"""
+
+# ── Main function ─────────────────────────────────────────────────────────────
+
+def extract_ttps_from_behavior(behavior:  str) -> list[str]:
+    """
+    Uses LLM to extract MITRE ATT&CK TTP IDs from behavior sentence,
+    then verifies each against enterprise-attack.json to eliminate hallucinations.
+
+    Two-step verification:
+      1. Format check  — regex T\d{4}(\.\d{3})? filters malformed IDs
+      2. JSON check    — verifies ID exists in enterprise-attack.json
+
+    Returns a deduplicated list of verified TTP IDs like ["T1059", "T1078"].
+    """
+    if not behavior:
+        return []
+
+    logger.info("[*] Running LLM-based TTP extraction (attack mapper)...")
+
+    llm = get_llm(model="attack_mapper", num_ctx=4096, num_predict=2048)
+    prompt = PromptTemplate(
+        input_variables=["behavior"],
+        template=TTP_MAPPER_PROMPT,
+    )
+    chain = prompt | llm
+
+    behavior_text = f"- {behavior}"
+
+    try:
+        response = chain.invoke({"behavior": behavior_text})
+
+        # ── Parse JSON response ───────────────────────────────────────────────
+        clean = response.strip().strip("```json").strip("```").strip()
+        brace_idx = clean.find("{")
+        if brace_idx > 0:
+            clean = clean[brace_idx:]
+        last_brace = clean.rfind("}")
+        if last_brace != -1:
+            clean = clean[:last_brace + 1]
+        print(f"[-] Cleaned JSON string: {clean}")
+
+        data = json.loads(clean)
+        raw_ttps = data.get("ttps", [])
+
+        logger.info(f"[-] LLM returned raw TTPs: {raw_ttps}")
+
+        # ── Step 1: Format validation ─────────────────────────────────────────
+        format_valid = []
+        for t in raw_ttps:
+            if not isinstance(t, str):
+                continue
+            t = t.strip().upper()
+            if _TTP_PATTERN.match(t):
+                format_valid.append(t)
+            else:
+                logger.warning(f"    [✗] '{t}' — invalid format, dropped")
+
+        # ── Step 2: Verify against enterprise-attack.json ─────────────────────
+        verified = []
+        seen = set()
+        for t in format_valid:
+            if t in seen:
+                continue
+            seen.add(t)
+            check = GraphConnector().get_ttp_by_id(t)
+            if check:   
+                verified.append(t)
+                logger.info(f"    [+] '{t}' verified against graph database")
+
+        logger.info(f"[+] Attack mapper final: {len(verified)} verified TTPs: {verified}")
+        return verified
+
+    except json.JSONDecodeError as e:
+        logger.error(f"[-] Attack mapper failed to parse JSON: {e}\nRaw: {response}")
+        return []
+    except Exception as e:
+        logger.error(f"[-] Attack mapper failed: {e}")
+        return []
+    
+def extract_cve_from_behaviors(behaviors:  list[str]) -> list[str]:
+    """
+    Uses LLM to extract CVE ID from behavior descriptions,
+    then verifies each against a CVE database to eliminate hallucinations.
+
+    Two-step verification:
+      1. Format check  — regex CVE-\d{4}-\d{4,} filters malformed ID
+      2. JSON check    — verifies ID exists in CVE database
+
+    Returns a deduplicated list of verified CVE IDs like ["CVE-2021-1234", "CVE-2022-5678"].
+    """
+    if not behaviors:
+        return []
+
+    logger.info("[*] Running LLM-based CVE extraction (attack mapper)...")
+
+    llm = get_llm(model="attack_mapper", num_ctx=4096, num_predict=2048)
+    prompt = PromptTemplate(
+        input_variables=["behaviors"],
+        template=CVE_MAPPER_PROMPT,
+    )
+    chain = prompt | llm
+
+    behavior_text = "\n- " + "\n- ".join(behaviors)
+
+    try:
+        response = chain.invoke({"behaviors": behavior_text})
+        if response:
+            logger.info(f"[-] LLM returned raw response: {response}")
+            # ── Parse JSON response ───────────────────────────────────────────────
+            clean = response.strip().strip("```json").strip("```").strip()
+            brace_idx = clean.find("{")
+            if brace_idx > 0:
+                clean = clean[brace_idx:]
+            last_brace = clean.rfind("}")
+            if last_brace != -1:
+                clean = clean[:last_brace + 1]
+            print(f"[-] Cleaned JSON string: {clean}")
+
+            data = json.loads(clean)
+            raw_cve = data.get("cve", [])
+            print(f"[-] Extracted CVE from JSON: {raw_cve}")
+            raw_cve = raw_cve[0] if isinstance(raw_cve, list) and raw_cve else ""
+
+            logger.info(f"[-] LLM returned raw CVE: {raw_cve}")
+
+            # ── Step 1: Format validation ────────────────────────────────────────
+            format_valid = None
+            raw_cve = raw_cve.strip().upper()
+            if _CVE_PATTERN.match(raw_cve):
+                format_valid = raw_cve
+            else:
+                logger.warning(f"    [✗] '{raw_cve}' — invalid format, dropped")
+
+            # ── Step 2: Verify against enterprise-attack.json ─────────────────────
+            verified = None
+            check = GraphConnector().get_cve_by_id(format_valid)
+            if check:   
+                verified = format_valid
+                logger.info(f"    [+] '{format_valid}' verified against graph database")
+
+            logger.info(f"[+] Attack mapper final verified CVEs: {verified}")
+            return verified
+        else:
+            logger.info("[+] Attack mapper found no CVE.")
+            return ""
+        
+        
+
+    except json.JSONDecodeError as e:
+        logger.error(f"[-] Attack mapper failed to parse JSON: {e}\nRaw: {response}")
+        return []
+    except Exception as e:
+        logger.error(f"[-] Attack mapper failed: {e}")
+        return []
+==================================================================================
 """
 FILE: enrichment/kg_engine.py
 ROLE: Knowledge Engine & Zero-Day Evaluator (Phase 4)
@@ -728,6 +969,15 @@ PURPOSE: Executes semantic search and aggregates multi-hop graph paths
 import logging
 from sentence_transformers import SentenceTransformer
 from db.neo4j_manager import GraphConnector
+import warnings
+warnings.filterwarnings("ignore", category=ResourceWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+# Suppress INFO/DEBUG logs from noisy libraries
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("neo4j").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)   # if httpx is used under the hood
+
 
 logger = logging.getLogger(__name__)
 
@@ -739,19 +989,82 @@ class KnowledgeEngine:
 
     def evaluate_threat(self, behaviors: list) -> dict:
         zero_day_flag = True
-        matched_threats = []
-        explicit_techniques = set()
         blast_radius = set()
-        unmatched_behaviors = []
+        unmatched_behaviors = behaviors.copy()  # Start with all behaviors as unmatched
+        matched_cves = []
+        matched_ttps = []
 
         if not behaviors:
             return {
-                "matched_cves": [], "matched_ttps": [], "matched_threats": [],
-                "techniques": [], "systems_at_risk": [], "is_zero_day": True,
+                "matched_cves": [], "matched_ttps": [], "systems_at_risk": [], "is_zero_day": True,
                 "unmatched_behaviors": []
             }
+        
+        # ── Attack mapper — LLM-based TTP/CVE extraction ──────────────────────────
+        # Runs BEFORE vector search to find TTPs/CVE that may not have a strong vector match but are still relevant to the attack
+        # Results verified against graph database — no hallucinations.
+        # IMPORTANT: attack mapper finding a broad TTPs/CVE category does NOT clear
+        # zero_day_flag — only vector search finding a specific semantic match does.
+        mapper_ttps: list[str] = []
+        try:
+            from enrichment.attack_mapper import extract_ttps_from_behavior, extract_cve_from_behaviors
 
-        logger.info(f"[*] Querying Neo4j for {len(behaviors)} behaviors (Threshold >= 90%)...")
+            # Extract TTPs from each behavior sentence using the attack mapper
+            for behavior in behaviors:
+                ttps = extract_ttps_from_behavior(behavior)
+
+                if ttps:
+                    unmatched_behaviors.remove(behavior)  # Mark this behavior as matched
+                    for ttp in ttps:
+                        if ttp not in mapper_ttps:
+                            mapper_ttps.append(ttp)
+
+                            # Fetch blast radius for this TTP from the graph
+                            try:
+                                with self.graph.driver.session() as session:
+                                    result = session.run("""
+                                        MATCH (t:MITRE_TTP {ttp_id: $ttp_id})-[:TARGETS]->(s:Software)
+                                        RETURN s.name AS system
+                                    """, ttp_id=ttp)
+                                    for record in result:
+                                        sys_name = record.get("system")
+                                        if sys_name:
+                                            blast_radius.add(sys_name)
+                                            logger.info(f"    [+] {ttp} targets: {sys_name}")
+                            except Exception as e:
+                                logger.warning(f"[!] Failed to fetch blast radius for {ttp}: {e}")
+
+                    if mapper_ttps:
+                        logger.info(f"[+] Attack mapper added {len(mapper_ttps)} TTPs: {mapper_ttps}")
+                    else:
+                        logger.info("[+] Attack mapper found no TTPs.")
+
+            # Extract CVEs from behavior sentences using the attack mapper
+            cve = extract_cve_from_behaviors(behaviors)
+            if cve:
+                matched_cves.append(cve)
+                try:
+                    with self.graph.driver.session() as session:
+                        result = session.run("""
+                            MATCH (c:CVE {cve_id: $cve_id})-[:EXPLOITS]->(s:Software)
+                            RETURN s.name AS system
+                        """, cve_id=cve)
+                        for record in result:
+                            sys_name = record.get("system")
+                            if sys_name:
+                                blast_radius.add(sys_name)
+                                logger.info(f"    [+] {cve} exploits: {sys_name}")
+                except Exception as e:
+                    logger.warning(f"[!] Failed to fetch blast radius for {cve}: {e}")
+
+        except Exception as e:
+            logger.warning(f"[!] Attack mapper failed, skipping: {e}")
+
+        # ── Vector Search & Contextual Filtering ───────────────────────────────
+
+        logger.info(f"[*] Querying Neo4j for {len(behaviors)} behaviors (Threshold >= 75%)...")
+
+        matched_ttps = mapper_ttps.copy()  # Start with TTPs found by attack mapper, then add vector search matches
 
         # ── Combined context search ───────────────────────────────────────────
         # Embed ALL behaviors together as one paragraph to get a holistic
@@ -760,7 +1073,7 @@ class KnowledgeEngine:
         combined_context = " ".join(behaviors)
         combined_vector  = self.model.encode(combined_context).tolist()
         context_results  = self.graph.vector_search(
-            post_vector=combined_vector, threshold=0.80
+            post_vector=combined_vector, threshold=0.75
         )
 
         # Build a set of threat IDs that appear in the combined context search
@@ -771,14 +1084,14 @@ class KnowledgeEngine:
             if tid:
                 context_relevant_ids.add(tid)
 
-        logger.info(f"[-] Combined context search found {len(context_relevant_ids)} relevant threats.")
+        logger.info(f"[-] Combined context search found {len(context_relevant_ids)} relevant threats: {context_relevant_ids}")
 
         # ── Per-behavior search ───────────────────────────────────────────────
         # Still search per behavior to detect zero-day and unmatched behaviors
         # but FILTER results against context_relevant_ids to remove noise
         for sentence in behaviors:
             vector  = self.model.encode(sentence).tolist()
-            results = self.graph.vector_search(post_vector=vector, threshold=0.90)
+            results = self.graph.vector_search(post_vector=vector, threshold=0.80)
 
             # Filter: only keep results that also appeared in the combined search
             # This removes CVEs that match a behavior sentence in isolation but
@@ -790,6 +1103,9 @@ class KnowledgeEngine:
                 ]
 
             if results:
+                if sentence in unmatched_behaviors:
+                    unmatched_behaviors.remove(sentence)  # Mark this behavior as matched
+
                 zero_day_flag = False
 
                 for record in results:
@@ -800,43 +1116,36 @@ class KnowledgeEngine:
                     if threat_id:
                         logger.info(f"    [{threat_type}] {threat_id} (score: {score:.4f})")
 
-                    if threat_type == "CVE" and threat_id not in matched_threats:
-                        matched_threats.append(threat_id)
+                    if threat_type == "CVE"  and threat_id not in matched_cves:
+                        matched_cves.append(threat_id)
 
-                    elif threat_type == "MITRE_TTP" and threat_id not in matched_threats:
-                        matched_threats.append(threat_id)
-                        explicit_techniques.add(threat_id)
+                    if threat_type == "MITRE_TTP" and threat_id not in matched_ttps:
+                        matched_ttps.append(threat_id)
 
-                    ttps = record.get("explicit_ttps", [])
-                    for ttp in ttps:
-                        if ttp:
-                            explicit_techniques.add(ttp)
-
+                    # Extract systems at risk from this result record
                     systems = record.get("systems_at_risk", [])
                     for sys in systems:
                         if sys:
                             blast_radius.add(sys)
-            else:
-                unmatched_behaviors.append(sentence)
-                        
-        matched_cves = [t for t in matched_threats if t.startswith("CVE-")]
-        matched_ttps = [t for t in matched_threats if t.startswith("T")]
+
+
+        if matched_cves or matched_ttps:
+            zero_day_flag = False
 
         payload = {
             "matched_cves":        matched_cves,
-            "matched_ttps":        list(matched_ttps),
-            "matched_threats":     matched_threats,      # kept for backward compat
-            "techniques":          list(explicit_techniques),
+            "matched_ttps":        matched_ttps,
             "systems_at_risk":     list(blast_radius),
-            "is_zero_day":         zero_day_flag,
+            "is_zero_day":         zero_day_flag,       
             "unmatched_behaviors": unmatched_behaviors,
         }
 
-        logger.info(f"[+] Matched CVEs : {matched_cves}")
-        logger.info(f"[+] Matched TTPs : {list(matched_ttps)}")
-        logger.info(f"[+] Systems at risk: {list(blast_radius)}")
-        logger.info(f"[+] Zero-Day: {zero_day_flag}")
+        logger.info(f"[+] Matched CVEs    : {matched_cves}")
+        logger.info(f"[+] Matched TTPs    : {matched_ttps}")
+        logger.info(f"[+] Systems at risk : {list(blast_radius)}")
+        logger.info(f"[+] Zero-Day        : {zero_day_flag}")
         return payload
-
+        
     def close(self):
         self.graph.close()
+======================================================================
