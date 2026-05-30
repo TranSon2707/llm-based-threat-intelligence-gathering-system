@@ -36,52 +36,53 @@ _CVE_PATTERN = re.compile(r'^CVE-\d{4}-\d{4,}$')
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
-TTP_MAPPER_PROMPT = """You are a MITRE ATT&CK expert. Given the adversarial behavior sentence below,
-identify which MITRE ATT&CK technique IDs (T-codes) best match this behavior.
+TTP_MAPPER_PROMPT = """
+You are a MITRE ATT&CK expert. Given this following adversarial behavior description,
+identify which MITRE ATT&CK technique IDs (T-codes) best match for this behavior.
 
-RULES:
-1. Only output REAL, VALID MITRE ATT&CK technique IDs (format: T1234 or T1234.001).
-2. Do NOT invent or guess IDs. If unsure, omit rather than guess.
-3. Include sub-techniques where they are more specific and accurate.
+CRITICAL RULES:
+1. Only output REAL, VALID MITRE ATT&CK (e.g. T10--, "--" is placeholders for digits).
+2. Do NOT invent technique IDs. If UNSURE, OMIT RATHER THAN GUESS.
+3. If can not find any valid techniques, return an EMPTY list: [].
 4. Output ONLY a JSON object — no preamble, no explanation, no markdown.
-5. Return an empty list if no techniques match: {{"ttps": []}}
+5. Include sub-techniques where relevant (e.g. T10--.001).
+6. Maximum 3 technique IDs.
 
 JSON Schema:
 {{"ttps": ["T----", "T----", "T----"]}}
 
 Behavior to analyze:
 {behavior}
+"""
 
-Output:"""
+CVE_MAPPER_PROMPT = """
+You are a cybersecurity expert. Given this following adversarial behaviors description,
+identify which CVE ID best match.
 
-CVE_MAPPER_PROMPT = """You are a cybersecurity expert. Given the adversarial behavior descriptions below,
-identify which single CVE ID is most specifically referenced or implied.
-
-RULES:
-1. Output exactly 1 CVE ID — the most specific and relevant one.
-2. Only output REAL, VALID CVE IDs (format: CVE-YYYY-NNNNN).
-3. Do NOT invent CVE IDs. If unsure, return an empty list.
-4. Output ONLY a JSON object — no preamble, no explanation, no markdown.
-5. Return an empty list if no CVE matches: {{"cve": []}}
+CRITICAL RULES:
+1. Only output 1 REAL, VALID CVE ID (e.g. CVE-20xy-1234).
+2. Do NOT invent CVE IDs. If UNSURE, OMIT RATHER THAN GUESS.
+3. If can not find any valid CVE, return an EMPTY list: [].
+4. Output ONLY a JSON object — NO preamble, NO EXPLANATION, NO MARKDOWN, NO NOTES.
+5, 1 CVE ONLY — the most relevant one.
 
 JSON Schema:
 {{"cve": ["CVE-20xy-1234"]}}
 
 Behaviors to analyze:
 {behaviors}
-
-Output:"""
+"""
 
 # ── Main function ─────────────────────────────────────────────────────────────
 
-def extract_ttps_from_behavior(behavior: str) -> list[str]:
+def extract_ttps_from_behavior(behavior:  str) -> list[str]:
     """
     Uses LLM to extract MITRE ATT&CK TTP IDs from behavior sentence,
     then verifies each against enterprise-attack.json to eliminate hallucinations.
 
     Two-step verification:
       1. Format check  — regex T\d{4}(\.\d{3})? filters malformed IDs
-      2. Graph check   — verifies ID exists in Neo4j
+      2. JSON check    — verifies ID exists in enterprise-attack.json
 
     Returns a deduplicated list of verified TTP IDs like ["T1059", "T1078"].
     """
@@ -90,15 +91,17 @@ def extract_ttps_from_behavior(behavior: str) -> list[str]:
 
     logger.info("[*] Running LLM-based TTP extraction (attack mapper)...")
 
-    llm = get_llm(model="attack_mapper", num_ctx=4096, num_predict=512)
+    llm = get_llm(model="attack_mapper", num_ctx=4096, num_predict=2048)
     prompt = PromptTemplate(
         input_variables=["behavior"],
         template=TTP_MAPPER_PROMPT,
     )
     chain = prompt | llm
 
+    behavior_text = f"- {behavior}"
+
     try:
-        response = chain.invoke({"behavior": behavior})
+        response = chain.invoke({"behavior": behavior_text})
 
         # ── Parse JSON response ───────────────────────────────────────────────
         clean = response.strip().strip("```json").strip("```").strip()
@@ -108,7 +111,7 @@ def extract_ttps_from_behavior(behavior: str) -> list[str]:
         last_brace = clean.rfind("}")
         if last_brace != -1:
             clean = clean[:last_brace + 1]
-        logger.debug(f"[-] Cleaned JSON string: {clean}")
+        print(f"[-] Cleaned JSON string: {clean}")
 
         data = json.loads(clean)
         raw_ttps = data.get("ttps", [])
@@ -126,21 +129,17 @@ def extract_ttps_from_behavior(behavior: str) -> list[str]:
             else:
                 logger.warning(f"    [✗] '{t}' — invalid format, dropped")
 
-        # ── Step 2: Verify against graph database — reuse one connection ──────
+        # ── Step 2: Verify against enterprise-attack.json ─────────────────────
         verified = []
         seen = set()
-        graph = GraphConnector()
-        try:
-            for t in format_valid:
-                if t in seen:
-                    continue
-                seen.add(t)
-                check = graph.get_ttp_by_id(t)
-                if check:
-                    verified.append(t)
-                    logger.info(f"    [+] '{t}' verified against graph database")
-        finally:
-            graph.close()
+        for t in format_valid:
+            if t in seen:
+                continue
+            seen.add(t)
+            check = GraphConnector().get_ttp_by_id(t)
+            if check:   
+                verified.append(t)
+                logger.info(f"    [+] '{t}' verified against graph database")
 
         logger.info(f"[+] Attack mapper final: {len(verified)} verified TTPs: {verified}")
         return verified
@@ -152,23 +151,23 @@ def extract_ttps_from_behavior(behavior: str) -> list[str]:
         logger.error(f"[-] Attack mapper failed: {e}")
         return []
     
-def extract_cve_from_behaviors(behaviors: list[str]) -> list[str]:
+def extract_cve_from_behaviors(behaviors:  list[str]) -> list[str]:
     """
     Uses LLM to extract CVE ID from behavior descriptions,
     then verifies each against a CVE database to eliminate hallucinations.
 
     Two-step verification:
       1. Format check  — regex CVE-\d{4}-\d{4,} filters malformed ID
-      2. Graph check   — verifies ID exists in Neo4j
+      2. JSON check    — verifies ID exists in CVE database
 
-    Returns a verified CVE ID string, or empty string if none found.
+    Returns a deduplicated list of verified CVE IDs like ["CVE-2021-1234", "CVE-2022-5678"].
     """
     if not behaviors:
         return []
 
     logger.info("[*] Running LLM-based CVE extraction (attack mapper)...")
 
-    llm = get_llm(model="attack_mapper", num_ctx=4096, num_predict=512)
+    llm = get_llm(model="attack_mapper", num_ctx=4096, num_predict=2048)
     prompt = PromptTemplate(
         input_variables=["behaviors"],
         template=CVE_MAPPER_PROMPT,
@@ -189,11 +188,11 @@ def extract_cve_from_behaviors(behaviors: list[str]) -> list[str]:
             last_brace = clean.rfind("}")
             if last_brace != -1:
                 clean = clean[:last_brace + 1]
-            logger.debug(f"[-] Cleaned JSON string: {clean}")
+            print(f"[-] Cleaned JSON string: {clean}")
 
             data = json.loads(clean)
             raw_cve = data.get("cve", [])
-            logger.debug(f"[-] Extracted CVE from JSON: {raw_cve}")
+            print(f"[-] Extracted CVE from JSON: {raw_cve}")
             raw_cve = raw_cve[0] if isinstance(raw_cve, list) and raw_cve else ""
 
             logger.info(f"[-] LLM returned raw CVE: {raw_cve}")
@@ -206,17 +205,12 @@ def extract_cve_from_behaviors(behaviors: list[str]) -> list[str]:
             else:
                 logger.warning(f"    [✗] '{raw_cve}' — invalid format, dropped")
 
-            # ── Step 2: Verify against graph database ────────────────────────────
+            # ── Step 2: Verify against enterprise-attack.json ─────────────────────
             verified = None
-            if format_valid:
-                graph = GraphConnector()
-                try:
-                    check = graph.get_cve_by_id(format_valid)
-                    if check:
-                        verified = format_valid
-                        logger.info(f"    [+] '{format_valid}' verified against graph database")
-                finally:
-                    graph.close()
+            check = GraphConnector().get_cve_by_id(format_valid)
+            if check:   
+                verified = format_valid
+                logger.info(f"    [+] '{format_valid}' verified against graph database")
 
             logger.info(f"[+] Attack mapper final verified CVEs: {verified}")
             return verified

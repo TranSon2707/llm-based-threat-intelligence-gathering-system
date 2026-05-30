@@ -85,8 +85,9 @@ Zero-Day Flag        : {is_zero_day}
 
 ## Threat Overview
 ## Threat Overview
+First write the source URL and post date:
 Source URL: {source_url} | Post Date: {post_date}
-Analyze the text and summarize it in 5-7 HIGHLY DETAILED sentences based on its type:
+Then, analyze the text and summarize it in 5-7 HIGHLY DETAILED sentences based on its type:
 - IF ACTIVE ATTACK: Detail exactly what the threat is, the Threat Actor behind it, and step-by-step how the attack operates technically.
 - IF PATCH/ADVISORY: Detail the specific software affected, the vulnerability mechanics, and the provided fix. 
 - IF NOISE/ADVERTISEMENT: Write exactly: "This data is non-actionable noise or a commercial advertisement."
@@ -110,10 +111,9 @@ Otherwise for each TTP listed: write its ID, real name, and what adversarial act
 DO NOT invent techniques. [source_id: {source_id}]
 
 ## Matched Vulnerabilities
-## Matched Vulnerabilities
 Matched CVEs: {matched_cves}
 If the above is "None", write: "Insufficient data to determine."
-Otherwise for each CVE listed above: write one line describing what it is, what system it affects, and why it is relevant to this attack.
+Otherwise for EACH CVE LISTED ABOVE: write one line describing what it is, what system it affects, and why it is relevant to this attack.
 [source_id: {source_id}]
 
 ## Blast Radius — Potential Impact Assessment
