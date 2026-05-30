@@ -46,15 +46,9 @@ We use `llama3` for report generation.
 ollama pull llama3
 ```
 
-**7. Install and Run Neo4j via Docker**
+**7. Install and Run Neo4j Desktop**
 
 We use Neo4j to store and correlate threat actors, malware, and CVEs.
-```bash
-docker-compose up -d
-```
-Open http://localhost:7474 in your browser to access the Neo4j Query Console. 
-
-**User:** `neo4j` | **Password:** `password`. 
 
 **8. Configure Environment Variables**
 
@@ -62,10 +56,6 @@ Create a .env file in the root directory and add your API keys:
 ``` bash
 NVD_API_KEY="your_key" #optional
 OTX_API_KEY="your_key"
-REDDIT_CLIENT_ID="your_id"
-REDDIT_CLIENT_SECRET="your_secret"
-REDDIT_USER_AGENT="ThreatIntel_Collector_v1.0"
-NEO4J_PASSWORD="your_neo4j_password_here"
 ```
 
 **9. Testing pipeline**
