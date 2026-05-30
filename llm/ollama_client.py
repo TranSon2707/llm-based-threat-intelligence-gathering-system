@@ -46,15 +46,6 @@ def get_llm(model: str, num_ctx: int = 4096, num_predict: int = 2048):
                   num_ctx=num_ctx,
                   num_predict=num_predict,
             )
-         elif any("aya" in m for m in models):
-            logger.info("[*] Using aya-expanse:8b for translation tasks.")
-            return OllamaLLM(
-               model="aya-expanse:8b",
-               base_url="http://localhost:11434",
-               temperature=0,
-               num_ctx=num_ctx,
-               num_predict=num_predict,
-               )
          else:
             logger.warning("[!] No dedicated translation model found — falling back to llama3.")
             return OllamaLLM(
@@ -67,7 +58,7 @@ def get_llm(model: str, num_ctx: int = 4096, num_predict: int = 2048):
       except Exception:
          logger.error("[!] Failed to connect to Ollama. Ensure the Ollama app is running and the model is downloaded.")
          raise
-   elif model == "report" or model == "behavior_extraction" or model == "attack_mapper":
+   elif model == "verifier" or model == "report" or model == "behavior_extraction" or model == "attack_mapper":
       try:
          r = requests.get("http://localhost:11434/api/tags", timeout=3)
          models = [m["name"] for m in r.json().get("models", [])]
