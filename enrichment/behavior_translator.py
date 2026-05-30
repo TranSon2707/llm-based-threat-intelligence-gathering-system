@@ -13,28 +13,29 @@ from langchain_core.prompts import PromptTemplate
 logger = logging.getLogger(__name__)
 
 # Strict prompt template requiring a specific JSON schema
-HYDE_PROMPT = """
-You are an expert Cyber Threat Intelligence Analyst with deep knowledge of MITRE ATT&CK and CVE databases.
-Read the following translated OSINT text. Extract the core adversarial behaviors and technical actions.
-Convert these into a strict JSON array of distinct single-sentence technical descriptions.
+HYDE_PROMPT = """You are an expert Cyber Threat Intelligence Analyst with deep knowledge of MITRE ATT&CK and CVE databases.
+Read the following OSINT text. Extract ONLY the core adversarial behaviors and technical attack actions.
+Convert each distinct action into a single formal technical sentence.
 
 CRITICAL RULES:
-1. Write each sentence using formal MITRE ATT&CK terminology. Mirror the exact phrasing style
-   used in MITRE ATT&CK technique descriptions. Examples of correct phrasing style:
+1. Use formal MITRE ATT&CK terminology. Match the exact phrasing style of ATT&CK technique descriptions:
    - "Adversary used valid accounts with stolen credentials to maintain persistent access"
-   - "Attacker executed remote code on target system by exploiting a vulnerability in the application"
-   - "Adversary performed data exfiltration over command and control channel using encrypted protocol"
-   - "Attacker moved laterally through the network using compromised credentials and remote services"
-   - "Adversary established persistence by creating scheduled tasks on compromised systems"
-2. Each sentence must describe ONE specific adversarial action or technique.
-3. Avoid incident-specific details like organization names, country names, or dates — focus on the TECHNIQUE, not the victim.
-4. Be specific enough that the sentence could match a MITRE TTP description directly.
-5. Do NOT include any explanations, greetings, or markdown outside of the JSON.
-6. Do NOT prepend TTP IDs (e.g. "T1059:") to behavior sentences. Write only the
-   plain technical sentence without any TTP ID prefix.
+   - "Attacker executed remote code on target system by exploiting a buffer overflow vulnerability"
+   - "Adversary performed data exfiltration over C2 channel using encrypted DNS tunneling"
+   - "Attacker moved laterally using Pass-the-Hash with compromised NTLM credentials"
+   - "Adversary established persistence by installing a malicious scheduled task"
+   - "Attacker disabled security tools by modifying registry keys to evade detection"
+2. Each sentence describes ONE specific adversarial action — do not combine multiple techniques.
+3. Strip all incident-specific details (company names, country names, dates, victim names).
+   Focus on WHAT was done, not WHERE or WHEN.
+4. Only include sentences that describe an adversary's action, not news narrative or context.
+5. If the text has no adversarial behaviors (e.g., it's a patch announcement with no attack description),
+   return an empty list: {{"behaviors": []}}
+6. Output ONLY a valid JSON object. No preamble, no explanation, no markdown fences.
+7. Do NOT prepend TTP IDs to sentences.
 
-JSON Schema Requirement:
-{{"behaviors": ["Tech sentence 1", "Tech sentence 2"]}}
+JSON format:
+{{"behaviors": ["sentence 1", "sentence 2"]}}
 
 Input Text:
 {osint_text}
@@ -42,15 +43,28 @@ Input Text:
 
 def translate_to_behaviors(osint_text: str) -> list:
     """Passes text to Llama 3 and returns a list of technical behavior strings."""
-    
+
     # Early return for empty/whitespace input — no point calling the LLM
     if not osint_text or not osint_text.strip():
         logger.info("[*] Empty input — skipping LLM call.")
         return []
-    
+
+    # Chunking: if text is too long (> 4000 characters), process it in chunks to avoid context limits
+    # and improve the quality of behavior extraction from long Reddit posts/articles.
+    MAX_CHUNK_SIZE = 4000
+    if len(osint_text) > MAX_CHUNK_SIZE:
+        logger.info(f"[*] Input text too large ({len(osint_text)} chars) — splitting into chunks.")
+        chunks = [osint_text[i:i + MAX_CHUNK_SIZE] for i in range(0, len(osint_text), MAX_CHUNK_SIZE)]
+        all_behaviors = []
+        for i, chunk in enumerate(chunks):
+            logger.info(f"[*] Processing chunk {i+1}/{len(chunks)}...")
+            all_behaviors.extend(translate_to_behaviors(chunk))
+        return list(set(all_behaviors)) # deduplicate across chunks
+
     logger.info("[*] Translating OSINT text to technical behaviors via LLM (HyDE)...")
-    
-    llm = get_llm(model="behavior_extraction", num_ctx=8192, num_predict=2048)
+
+    # Prefer translation-optimized models if available
+    llm = get_llm(model="translation", num_ctx=8192, num_predict=2048)
     prompt = PromptTemplate(input_variables=["osint_text"], template=HYDE_PROMPT)
     chain = prompt | llm
     
