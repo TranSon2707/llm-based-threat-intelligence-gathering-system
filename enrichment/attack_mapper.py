@@ -47,7 +47,7 @@ RULES:
 5. Return an empty list if no techniques match: {{"ttps": []}}
 
 JSON Schema:
-{{"ttps": ["T1234", "T5678.001"]}}
+{{"ttps": ["T----", "T----", "T----"]}}
 
 Behavior to analyze:
 {behavior}
@@ -65,7 +65,7 @@ RULES:
 5. Return an empty list if no CVE matches: {{"cve": []}}
 
 JSON Schema:
-{{"cve": ["CVE-2024-12345"]}}
+{{"cve": ["CVE-20xy-1234"]}}
 
 Behaviors to analyze:
 {behaviors}

@@ -67,7 +67,12 @@ _RE_IPV6 = re.compile(
 # DOMAIN: stricter regex requiring valid TLDs or common domain structures
 _RE_DOMAIN = re.compile(
     r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)"
-    r"+(?:com|org|net|edu|gov|mil|int|io|co|me|xyz|biz|info|dev|tech|app|ru|cn|uk|de|jp|us|uk|vn|us)\b",
+    r"+(?:com|org|net|edu|gov|mil|int|io|co|me|xyz|biz|info|dev|tech|app"
+    r"|ru|cn|uk|de|jp|us|vn|ir|kp|su"           # nation-state actor TLDs
+    r"|onion"                                      # Tor hidden services
+    r"|top|club|site|online|store|live|pw|cc|xxx"     # common phishing TLDs
+    r")\b",
+    re.IGNORECASE,
 )
 
 # Cryptographic hashes — distinguished by length, all hex characters
