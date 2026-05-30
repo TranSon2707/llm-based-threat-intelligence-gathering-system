@@ -33,16 +33,15 @@ IOCs that should not be sent to cloud APIs.
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │  COLLECT    │───>│ PREPROCESS  │───>│   ENRICH    │───>│   REPORT    │───>│   REVIEW    │
 │             │    │             │    │             │    │             │    │             │
-│ NVD         │    │ Strip HTML  │    │ Entity      │    │ LLM summary │    │ HITL gate   │
-│ OTX         │    │ Dedup       │    │ Extract     │    │ per item    │    │ approve /   │
-│ Exploit-DB  │    │ Encapsulate │    │ NER spaCy   │    │             │    │ reject      │
-│ Reddit      │    │             │    │ ATT&CK map  │    │             │    │             │
+│ NVD         │    │ Strip HTML  │    │ Regex/spaCy │    │ GraphRAG    │    │ HITL gate   │
+│ OTX         │    │ Translate   │    │ HyDE LLM    │    │ LLM Summary │    │ approve /   │
+│ Exploit-DB  │    │ Encapsulate │    │ Neo4j Search│    │             │    │ reject      │
+│ Reddit      │    │ Dedup       │    │ Zero-Day Chk│    │             │    │             │
 └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
        │                  │                  │                  │                  │
        v                  v                  v                  v                  v
   raw_items          processed=1         entities          reports            reports/
-  (SQLite)           (SQLite)          ttp_mappings        (SQLite)           *.txt
-                                        (SQLite)
+  (SQLite)           (SQLite)           Neo4j Graph        (SQLite)           *.txt
 ```
 
 ---
@@ -77,7 +76,7 @@ OSINT Deduplication uses a 'Shift-Left' approach at the collection edge. `reddit
 
 ### Stage 2 - Preprocess (`preprocessor/`)
 
-**Purpose:** Clean and sanitise raw text before any LLM sees it.
+**Purpose:** Clean, translate, and sanitise raw text before any LLM sees it.
 
 **Strict order - must not be changed:**
 
@@ -86,6 +85,9 @@ raw_items (processed=0)
         │
         v
   html_stripper.py        ← removes all HTML tags, normalises whitespace
+        │
+        v
+  language_detector.py    ← Detects non-English text and translates it to English natively
         │
         v
   encapsulator.py         ← wraps text in <THREAT_DATA>...</THREAT_DATA>
@@ -109,62 +111,70 @@ not executable instructions.
 
 ### Stage 3 - Enrich (`enrichment/`)
 
-**Purpose:** Extract structured entities and map to MITRE ATT&CK techniques.
+**Purpose:** Extract structured entities, translate prose to behaviors, and map to MITRE ATT&CK via Neo4j Graph.
+
+This stage implements a **Hybrid Engine** combining deterministic extraction with probabilistic reasoning:
 
 **Sub-components run in order:**
 
 ```
 cleaned text (from preprocessor)
         │
-        ├──> entity_extractor.py   ← regex: CVE, IPv4, IPv6, domain, MD5, SHA1, SHA256
+        ├──> entity_extractor.py   ← regex: CVE, IPs, domain, Hashes, System/Software
         │                             writes to: entities table
         │
         ├──> ner_spacy.py          ← spaCy NER: MALWARE, THREAT_ACTOR
         │                             custom EntityRuler patterns loaded before ner
         │                             writes to: entities table
         │
-        └──> attack_mapper.py      ← LangChain FewShotPromptTemplate
-                                      input: cleaned text
-                                      output: list of TTP objects {id, name, tactic, justification}
-                                      validated: every ID checked against mitreattack-python
-                                      writes to: ttp_mappings table
+        └──> behavior_translator.py ← LLM (HyDE Pattern)
+             │                        Translates OSINT prose into formal MITRE ATT&CK 
+             │                        behavior sentences (strict JSON array)
+             v
+        attack_mapper.py           ← LLM Verification
+             │                        Extracts exact TTPs/CVEs from behavior sentences
+             │                        Verifies IDs against Neo4j to drop hallucinations
+             v
+        kg_engine.py               ← Neo4j Vector Search & Graph Traversal
+                                      Embeds behaviors via all-MiniLM-L6-v2 (384-dim)
+                                      Executes semantic search (Cosine similarity)
+                                      Traverses graph to determine Blast Radius
 ```
 
 ---
 
-### Stage 3.5 - Correlation
-**Zero-Day Correlation Engine:**
-To prevent false positives while operating under local hardware constraints, the system executes a 3-Step Verification sequence before flagging a threat as novel:
+### Stage 3.5 - Correlation (Zero-Day Assessment)
+**Zero-Day Correlation Engine (`kg_engine.py`):**
+To prevent false positives while operating under local hardware constraints, the system evaluates threats against the Knowledge Graph:
 
-**Regex Disqualification:** Instantly drops entities containing known `CVE-YYYY-NNNN` formats.
-
-**State-Aware Local Graph Cache:** Queries the local Vector DB and Neo4j graph for matches. It cross-references the threat's timestamp against the `sync_state.json` file. If the threat falls within a year that has already been embedded, the local graph is trusted.
-
-**NVD API Fallback:** If not found locally, queries the live NVD REST API via `keywordSearch`. Threats are only flagged as `is_novel: true` if they fail all three checks. 
+1. **Attack Mapper Extraction:** First uses LLM to identify explicit CVE/TTPs, verified against Neo4j.
+2. **Contextual Filter:** Embeds ALL behaviors into a combined paragraph, searching Neo4j to find threats matching the *holistic* attack.
+3. **Semantic Similarity:** Embeds each behavior individually. Filters results against the holistic context to drop noise. 
+4. **Assessment:** If no semantic matches meet the threshold (0.75 / 0.80) and no explicit CVE/TTPs are found, `is_zero_day` is flagged `True`.
 
 ---
 
 ### Stage 4 - Report (`enrichment/report_generator.py`)
 
-**Purpose:** Generate analyst-style markdown report per item using local LLM.
+**Purpose:** Generate analyst-style markdown report per item using local LLM via **GraphRAG**.
 
-**Retrieval pattern (closed-domain RAG):**
+**Retrieval pattern (GraphRAG):**
 
 ```
 item_id
    │
    ├── SELECT * FROM entities WHERE source_id = item_id
-   ├── SELECT * FROM ttp_mappings WHERE source_id = item_id
+   ├── SELECT * FROM neo4j (Matched CVEs, TTPs, Blast Radius, Zero-Day Flag)
    └── SELECT description FROM raw_items WHERE id = item_id
           │
           v
-   context = {entities} + {ttps} + {description}
+   context = {entities} + {graph_data} + {description}
           │
           v
    LangChain chain -> Ollama llama3
           │
    System prompt: "Use ONLY the provided context.
-                   Every claim must cite source_id.
+                   Every claim must cite [source_id: X].
                    If evidence is missing, output:
                    'Insufficient data to determine.'"
           │
@@ -205,38 +215,49 @@ External APIs                   Local System
 NVD API v2  ──┐
 OTX API     ──┼──>  collectors/  ──>  raw_items (processed=0)
 Exploit-DB  ──┘                              │
-Reddit*     ──┘                              │
+RSS/Reddit  ──┘                              │
                                              v
                                       preprocessor/
-                                      (strip->dedup->encapsulate)
+                           (strip -> translate -> encapsulate)
                                              │
                                              v
                                    raw_items (processed=1)
                                              │
-                              ┌──────────────┼──────────────┐
-                              v              v              v
-                        entity_extractor  ner_spacy    attack_mapper
-                              │              │              │
-                              └──────────────┴──────────────┘
-                                             │
-                                    ┌────────┴────────┐
-                                    v                 v
-                                entities         ttp_mappings
-                                    │                 │
-                                    └────────┬────────┘
+                       ┌─────────────────────┴──────────────────┐
+                       v                                        v
+               entity_extractor                             ner_spacy
+           (regex: CVE, IPs, Hashes)               (spaCy NER: MALWARE, ACTOR)
+                       │                                        │
+                       └─────────────────────┬──────────────────┘
                                              v
-                                    report_generator
-                                    (Ollama llama3)
+                                    behavior_translator
+                             (LLM HyDE: OSINT -> formal behaviors)
                                              │
                                              v
-                                         reports
+                                        kg_engine
+                          (Neo4j Vector Search + Graph Traversal)
+                             (Calls attack_mapper internally)
+                                             │
+                             ┌───────────────┴───────────────┐
+                             v                               v
+                          entities                      kg_payload
+                          (SQLite)                (CVEs, TTPs, Blast Radius, 
+                                                        is_zero_day)
+                             │                               │
+                             └───────────────┬───────────────┘
+                                             v
+                                      report_generator
+                                   (GraphRAG: Ollama llama3)
                                              │
                                              v
-                                       review_gate
-                                    (HITL: A/R/E/S)
+                                          reports
                                              │
                                              v
-                                      reports/*.txt
+                                        review_gate
+                                      (HITL: A/R/E/S)
+                                             │
+                                             v
+                                       reports/*.txt
 ```
 
 ---
@@ -249,11 +270,13 @@ Reddit*     ──┘                              │
 | `preprocessor/` | Hai | `raw_items` (processed=0) | `raw_items` (processed=1) |
 | `enrichment/entity_extractor.py` | Son | `raw_items` | `entities` |
 | `enrichment/ner_spacy.py` | Son | `raw_items` | `entities` |
-| `enrichment/attack_mapper.py` | Linh | `raw_items`, `entities` | `ttp_mappings` |
-| `enrichment/report_generator.py` | Linh | `entities`, `ttp_mappings`, `raw_items` | `reports` |
+| `enrichment/behavior_translator.py`| Linh | `raw_items` | (passes data in memory) |
+| `enrichment/attack_mapper.py` | Linh | (passes data in memory) | (verifies against Neo4j) |
+| `enrichment/kg_engine.py` | Linh | Neo4j Vector Index | `kg_payload` (in memory) |
+| `enrichment/report_generator.py` | Linh | `entities`, `kg_payload`, `raw_items` | `reports` |
 | `cli/` | Son | All tables | `reports/*.txt` |
 | `db/queries.py` | Linh | - | All tables |
-| `db/schema.py` | Linh | - | Creates all tables |
+| `db/neo4j_manager.py` | Linh | - | Knowledge Graph |
 
 **Rule: No module writes SQL inline. All DB access goes through `db/queries.py`.**
 

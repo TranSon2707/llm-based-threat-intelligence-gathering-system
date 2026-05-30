@@ -44,7 +44,7 @@ Each team member works on their own branch. Never commit directly to `main`.
 
 All SQLite logic lives strictly in `db/queries.py`. 
 
-All Neo4j Knowledge Graph logic lives strictly in `db/graph_connector.py`. 
+All Neo4j Knowledge Graph logic lives strictly in `db/neo4j_manager.py`. 
 
 Every other module must import named functions from these files.
 
@@ -234,7 +234,7 @@ Pattern format supports:
 
 **(SQLite):** If the new entity type needs to be stored in the relational database, `insert_entity()` in `db/queries.py` accepts any `entity_type` string, no schema change needed.
 
-**(Neo4j):** If `USE_GRAPH=True`, the entity must be mapped into the Cypher query within `db/graph_connector.py` -> `insert_threat_intel()`. You must ensure the `MERGE` statement creates the correct node label (e.g., `(i:Indicator {value: ioc.value})`) and relationships.
+**(Neo4j):** If `USE_GRAPH=True`, the entity must be mapped into the Cypher query within `db/neo4j_manager.py` -> `insert_threat_intel()`. You must ensure the `MERGE` statement creates the correct node label (e.g., `(i:Indicator {value: ioc.value})`) and relationships.
 
 ---
 
@@ -332,7 +332,7 @@ These rules are non-negotiable. Violating any of them will block your PR.
 
 | # | Rule |
 |---|---|
-| 1 | **No inline SQL/Cypher** outside `db/queries.py` or `db/graph_connector.py` |
+| 1 | **No inline SQL/Cypher** outside `db/queries.py` or `db/neo4j_manager.py` |
 | 2 | **No API keys** in any `.py`, `.yaml`, or `.md` file |
 | 3 | **No direct DB writes** inside collectors - use `collect_and_store()` which delegates to the data layer. |
 | 4 | **No LLM calls** outside `enrichment/attack_mapper.py` and `enrichment/report_generator.py` |

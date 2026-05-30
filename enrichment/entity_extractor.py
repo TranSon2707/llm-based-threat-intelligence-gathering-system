@@ -64,11 +64,15 @@ _RE_IPV6 = re.compile(
     r"|\b[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}\b",
 )
 
-# DOMAIN: hostname.tld or sub.hostname.tld
-# Excludes pure numbers (already caught by IPv4), requires a known-style TLD.
+# DOMAIN: stricter regex requiring valid TLDs or common domain structures
 _RE_DOMAIN = re.compile(
     r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)"
-    r"+[a-zA-Z]{2,}\b",
+    r"+(?:com|org|net|edu|gov|mil|int|io|co|me|xyz|biz|info|dev|tech|app"
+    r"|ru|cn|uk|de|jp|us|vn|ir|kp|su"           # nation-state actor TLDs
+    r"|onion"                                      # Tor hidden services
+    r"|top|club|site|online|store|live|pw|cc|xxx"     # common phishing TLDs
+    r")\b",
+    re.IGNORECASE,
 )
 
 # Cryptographic hashes — distinguished by length, all hex characters
@@ -240,7 +244,12 @@ _SYSTEM_PATTERNS: list[tuple[str, re.Pattern]] = [
 # Common tokens that match the domain regex but are not IOCs
 _DOMAIN_STOPWORDS: frozenset[str] = frozenset({
     "example.com", "localhost.localdomain", "test.local",
-    "schema.org", "w3.org", "xmlns.com",
+    "schema.org", "w3.org", "xmlns.com", "google.com",
+    "github.com", "microsoft.com", "apple.com", "amazon.com",
+    "twitter.com", "facebook.com", "linkedin.com", "youtube.com",
+    "wikipedia.org", "yahoo.com", "reddit.com", "nvd.nist.gov",
+    "cve.mitre.org", "mitre.org", "nist.gov", "alienvault.com",
+    "exploit-db.com"
 })
 
 
@@ -315,6 +324,13 @@ def extract_entities(text: str) -> list[ExtractedEntity]:
     for match in _RE_DOMAIN.finditer(text):
         val = match.group().lower()
         if val in _DOMAIN_STOPWORDS:
+            continue
+        # Skip if any segment looks like a version number or single letter (e.g., "v1.2.3" or "a.b")
+        segments = val.split(".")
+        if any(len(seg) <= 1 or seg.isdigit() for seg in segments if seg):
+            continue
+        # Skip single-segment TLD matches (e.g., "sentence.It" where "It" is 2-letter TLD)
+        if len(segments) < 2:
             continue
         # Avoid re-capturing things already tagged as IPv4
         if any(e.entity_value == match.group() and e.entity_type == "IPv4"
